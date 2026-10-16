@@ -21,15 +21,8 @@ jobs:
           brew list go >/dev/null 2>&1 || brew install go
           brew list swiftlint >/dev/null 2>&1 || brew install swiftlint
 
-      - name: Inject private WARP profile
-        env:
-          WARP_PROFILE_BASE64: ${{ secrets.WARP_PROFILE_BASE64 }}
+      - name: Validate public WARP profile
         run: |
-          if [ -z "$WARP_PROFILE_BASE64" ]; then
-            echo "Missing repository secret WARP_PROFILE_BASE64" >&2
-            exit 1
-          fi
-          printf '%s' "$WARP_PROFILE_BASE64" | base64 --decode > Sources/WireGuardApp/UI/iOS/warp_profile.conf
           test -s Sources/WireGuardApp/UI/iOS/warp_profile.conf
           plutil -lint Sources/WireGuardApp/UI/iOS/Info.plist
 

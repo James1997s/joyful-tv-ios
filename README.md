@@ -8,7 +8,7 @@ On launch, the app loads or installs the supplied Cloudflare WARP-compatible Wir
 
 The first connection can display an iOS system VPN approval prompt. A jailbreak can change how an IPA is installed or signed, but it does not guarantee bypass of iOS VPN configuration consent or Network Extension requirements.
 
-The WARP profile is intentionally **not committed**. GitHub Actions reads it from the private repository secret `WARP_PROFILE_BASE64`, writes it into the build tree, and removes the runner at job end. Do not add the private profile file to Git.
+The WARP profile is intentionally committed in this public repository at the owner’s direction. It contains a WireGuard private key; anyone can read the key from the public source history and use it until it is rotated. The built, unencrypted IPA also contains the same profile.
 
 ## Included behavior
 
@@ -23,8 +23,6 @@ The first port focuses on the Android app’s Live-TV-only path. Its Android-onl
 ## GitHub Actions build
 
 The repository workflow `.github/workflows/ios-ipa.yml` builds an **unsigned IPA** using GitHub’s macOS runner. This is suited to a jailbroken device with an installer that accepts unsigned/ad-hoc packages. It is not an App Store or TestFlight artifact and cannot be installed on a stock iPhone without a valid signing identity/provisioning profile.
-
-Required repository secret: `WARP_PROFILE_BASE64`, the base64-encoded contents of `warp_profile.conf`.
 
 Manual equivalent on macOS:
 
