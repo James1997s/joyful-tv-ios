@@ -13,7 +13,7 @@ The WARP profile is intentionally committed in this public repository at the own
 ## Included behavior
 
 - Trial enrollment using the existing `https://joyful.watch/trial/` form and the [Mail.tm API](https://docs.mail.tm/) (public-domain discovery, temporary account/token creation, and authenticated message polling). Mail.tm’s bearer token stays in memory; the temporary mailbox is deleted after credentials are received. The app includes a visible Mail.tm attribution link as required by its terms.
-- Verification-link and account-credential extraction from Mail.tm’s plain-text and HTML-array message formats.
+- Verification-link and account-credential extraction from Mail.tm’s plain-text and HTML-array message formats, including compact single-line messages and the `user` label supported by the original Android app.
 - 24-hour credential retention in iOS Keychain.
 - Xtream-compatible account validation and Live TV categories/channels.
 - Search, favorites, refresh, HLS stream URL construction, AVPlayer playback, and short EPG preview when the provider supports it.

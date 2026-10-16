@@ -857,16 +857,36 @@ private enum MailTm {
     }
 
     static func extractCredentials(_ text: String) throws -> (portal: String, username: String, password: String) {
-        func value(_ labels: String) -> String? {
-            let pattern = "(?im)^\\s*(?:your\\s+)?(?:\\*\\*)?(?:" + labels + ")(?:\\*\\*)?\\s*(?::|=|\\bis\\b|\\t+)\\s*([^\\r\\n]+)"
-            guard let regex = try? NSRegularExpression(pattern: pattern), let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)), let range = Range(match.range(at: 1), in: text) else { return nil }
-            return String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "*`\"'")))
-        }
-        let user = value("username|user\\s*name|user\\s*id|login(?:\\s*(?:name|id))?|account(?:\\s*(?:name|id))?")
-        let password = value("password|pass\\s*word|passcode")
-        let portal = value("portal\\s*(?:url|link)|portalurl")
+        let usernameLabels = "(?:username|user\\s*name|user\\s*id|user|login(?:\\s*(?:name|id))?|account(?:\\s*(?:name|id))?)"
+        let passwordLabels = "(?:password|pass\\s*word|passcode)"
+        let portalLabels = "(?:portal\\s*(?:url|link)|portalurl)"
+        let allLabels = "(?:\(usernameLabels)|\(passwordLabels)|\(portalLabels))"
+        let user = extractLabeledValue(text, labels: usernameLabels, allLabels: allLabels)
+        let password = extractLabeledValue(text, labels: passwordLabels, allLabels: allLabels)
+        let portal = extractLabeledValue(text, labels: portalLabels, allLabels: allLabels)
         guard let user, let password, let portal, let url = URL(string: portal), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw JoyfulError.message("The account email did not contain a complete portal, username, and password.") }
         return (portal, user, password)
+    }
+
+    private static func extractLabeledValue(_ body: String, labels: String, allLabels: String) -> String? {
+        guard !body.isEmpty else { return nil }
+        let range = NSRange(body.startIndex..<body.endIndex, in: body)
+        let linePattern = "(?im)^\\s*\\**\\s*(?:your\\s+)?" + labels + "\\s*\\**\\s*(?::|=|\\bis\\b|\\t+)\\s*([^\\r\\n]+)"
+        var extracted: String?
+        if let regex = try? NSRegularExpression(pattern: linePattern), let match = regex.firstMatch(in: body, range: range), let valueRange = Range(match.range(at: 1), in: body) {
+            extracted = String(body[valueRange])
+        } else {
+            let compactPattern = "(?is)\\**\\s*(?:your\\s+)?" + labels + "\\**\\s*(?::|=|\\bis\\b|\\t+)\\s*(.+?)(?=\\s+(?:your\\s+)?" + allLabels + "\\s*\\**\\s*(?::|=|\\bis\\b|\\t+)|$)"
+            if let regex = try? NSRegularExpression(pattern: compactPattern), let match = regex.firstMatch(in: body, range: range), let valueRange = Range(match.range(at: 1), in: body) {
+                extracted = String(body[valueRange])
+            }
+        }
+        guard var value = extracted else { return nil }
+        value = value.replacingOccurrences(of: #"^[\s*]+|[\s*]+$"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.count >= 2 && ((value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) || (value.hasPrefix("`") && value.hasSuffix("`"))) {
+            value = String(value.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return value.replacingOccurrences(of: #"(?i)\s+(?=(?:username|user\s*name|user\s*id|user|password|pass\s*word|passcode|portal\s*(?:url|link)|portalurl)\s*[:=]).*$"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func htmlBody(from message: [String: Any]) -> String {
