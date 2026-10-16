@@ -541,7 +541,18 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             progressView.isHidden = true
         } catch {
             progressView.isHidden = true
-            statusLabel.text = "Could not load Live TV: \(error.localizedDescription)"
+            let networkError = error as NSError
+            if networkError.domain == NSURLErrorDomain && [-1022, -1200, -1201, -1202].contains(networkError.code) {
+                let portalURL = URLComponents(string: credentials.portal)
+                let portalHost = portalURL?.host ?? "the IPTV portal"
+                if portalURL?.scheme?.lowercased() == "http" {
+                    statusLabel.text = "Could not connect to \(portalHost) over HTTPS. The account email supplied an HTTP portal; iOS blocks HTTP login connections. The app tried HTTPS. If this host is HTTP-only, send its hostname for a one-host exception."
+                } else {
+                    statusLabel.text = "Could not establish a secure connection to \(portalHost). Ask the provider for a working HTTPS portal."
+                }
+            } else {
+                statusLabel.text = "Could not load Live TV: \(error.localizedDescription)"
+            }
             actionButton.setTitle("Retry loading channels", for: .normal)
             actionButton.isHidden = false
         }
@@ -930,7 +941,10 @@ private struct XtreamClient {
         var value = portal.trimmingCharacters(in: .whitespacesAndNewlines)
         value = value.replacingOccurrences(of: #"(?i)/player_api\.php/?$"#, with: "", options: .regularExpression)
         while value.hasSuffix("/") { value.removeLast() }
-        return value
+        guard var components = URLComponents(string: value), components.scheme?.lowercased() == "http" else { return value }
+        components.scheme = "https"
+        if components.port == 80 { components.port = nil }
+        return components.string ?? value
     }
     private func endpoint(action: String? = nil, streamID: String? = nil) throws -> URL {
         guard var components = URLComponents(string: base + "/player_api.php") else { throw JoyfulError.message("Invalid IPTV portal URL.") }
