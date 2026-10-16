@@ -1,0 +1,74 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          brew list go >/dev/null 2>&1 || brew install go
+          brew list swiftlint >/dev/null 2>&1 || brew install swiftlint
+
+      - name: Inject private WARP profile
+        env:
+          WARP_PROFILE_BASE64: ${{ secrets.WARP_PROFILE_BASE64 }}
+        run: |
+          if [ -z "$WARP_PROFILE_BASE64" ]; then
+            echo "Missing repository secret WARP_PROFILE_BASE64" >&2
+            exit 1
+          fi
+          printf '%s' "$WARP_PROFILE_BASE64" | base64 --decode > Sources/WireGuardApp/UI/iOS/warp_profile.conf
+          test -s Sources/WireGuardApp/UI/iOS/warp_profile.conf
+          plutil -lint Sources/WireGuardApp/UI/iOS/Info.plist
+
+      - name: Configure app identifier
+        run: |
+          cat > Sources/WireGuardApp/Config/Developer.xcconfig <<'EOF'
+          DEVELOPMENT_TEAM =
+          APP_ID_IOS = com.joyful.watch.iptv
+          APP_ID_MACOS = com.joyful.watch.iptv.mac
+          EOF
+
+      - name: Build iOS app for device
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project WireGuard.xcodeproj \
+            -target WireGuardiOS \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee "$RUNNER_TEMP/xcodebuild.log" | tail -n 100
+
+      - name: Package unsigned IPA
+        run: |
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/WireGuard.app"
+          test -d "$APP"
+          test -d "$APP/PlugIns/WireGuardNetworkExtension.appex"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && /usr/bin/zip -qr "$GITHUB_WORKSPACE/JoyfulTV-iOS-unsigned.ipa" Payload)
+          test -s "$GITHUB_WORKSPACE/JoyfulTV-iOS-unsigned.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JoyfulTV-iOS-unsigned
+          path: JoyfulTV-iOS-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

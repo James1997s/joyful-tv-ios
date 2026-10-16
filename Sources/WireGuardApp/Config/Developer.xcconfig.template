@@ -1,0 +1,4 @@
+// Copy to Developer.xcconfig for local builds; CI creates it during the build.
+DEVELOPMENT_TEAM =
+APP_ID_IOS = com.joyful.watch.iptv
+APP_ID_MACOS = com.joyful.watch.iptv.mac
