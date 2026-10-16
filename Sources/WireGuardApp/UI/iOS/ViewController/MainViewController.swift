@@ -171,14 +171,16 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         progressView.isHidden = false
         progressView.setProgress(0.08, animated: true)
         TunnelsManager.create { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .failure(let error):
-                self.warpStartFailed("Could not load the iOS VPN configuration: \(Self.tunnelErrorDetails(error))")
-            case .success(let manager):
-                self.tunnelsManager = manager
-                manager.activationDelegate = self
-                self.installOrStartWARP(using: manager)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .failure(let error):
+                    self.warpStartFailed("Could not load the iOS VPN configuration: \(Self.tunnelErrorDetails(error))")
+                case .success(let manager):
+                    self.tunnelsManager = manager
+                    manager.activationDelegate = self
+                    self.installOrStartWARP(using: manager)
+                }
             }
         }
     }
@@ -203,14 +205,16 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             let configuration = try TunnelConfiguration(fromWgQuickConfig: profile, called: warpTunnelName)
             statusLabel.text = "Adding WARP to iOS VPN settings…"
             manager.add(tunnelConfiguration: configuration) { [weak self] result in
-                guard let self else { return }
-                switch result {
-                case .failure(let error):
-                    self.warpStartFailed("Could not install the WARP tunnel: \(Self.tunnelErrorDetails(error))")
-                case .success(let tunnel):
-                    self.statusLabel.text = "Connecting WARP. Confirm the iOS VPN request…"
-                    manager.startActivation(of: tunnel)
-                    self.waitForConnectedWARP(using: manager)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    switch result {
+                    case .failure(let error):
+                        self.warpStartFailed("Could not install the WARP tunnel: \(Self.tunnelErrorDetails(error))")
+                    case .success(let tunnel):
+                        self.statusLabel.text = "Connecting WARP. Confirm the iOS VPN request…"
+                        manager.startActivation(of: tunnel)
+                        self.waitForConnectedWARP(using: manager)
+                    }
                 }
             }
         } catch {
@@ -422,7 +426,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             guard let self else { return }
             do {
                 let message = try await ThrowawayMail.waitForMessage(mailboxID: self.mailboxID, excluding: excludedID, warpIsReady: { self.warpReady }, progress: { [weak self] text in
-                    self?.statusLabel.text = text
+                    DispatchQueue.main.async { self?.statusLabel.text = text }
                 })
                 guard self.warpReady else { throw JoyfulError.warpLost }
                 if self.trialStage == .waitingForVerification {
@@ -777,7 +781,9 @@ private enum ThrowawayMail {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("JoyfulTV-iOS/2.32", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw JoyfulError.message("ThrowawayMail API request failed.") }
+        guard let http = response as? HTTPURLResponse else { throw JoyfulError.message("ThrowawayMail returned a non-HTTP response.") }
+        guard (200..<300).contains(http.statusCode) else { throw JoyfulError.message("ThrowawayMail API returned HTTP \(http.statusCode).") }
+        guard data.count <= 10 * 1024 * 1024 else { throw JoyfulError.message("ThrowawayMail response was too large to process safely.") }
         return try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
     }
 }
