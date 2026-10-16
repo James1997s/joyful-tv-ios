@@ -49,7 +49,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private var trialTask: Task<Void, Never>?
     private var epgTask: Task<Void, Never>?
 
-    private enum TrialStage: Equatable { case idle, openingForm, waitingForVerification, confirming, waitingForCredentials }
+    private enum TrialStage: Equatable { case idle, openingForm, submitting, waitingForVerification, confirming, waitingForCredentials }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -354,7 +354,6 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             return
         }
         trialTask?.cancel()
-        signupStartedAt = Date()
         trialStage = .idle
         progressView.isHidden = false
         progressView.setProgress(0.38, animated: true)
@@ -392,6 +391,8 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     }
 
     private func submitTrialForm(in webView: WKWebView) {
+        guard trialStage == .openingForm else { return }
+        trialStage = .submitting
         let script = """
         (function(){
           var f=document.querySelector('#mc4wp-form-1');
@@ -413,6 +414,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
                 self.showTrialFailure("The trial form could not be submitted. Check the form and retry.")
                 return
             }
+            self.signupStartedAt = Date()
             self.trialStage = .waitingForVerification
             self.statusLabel.text = "Trial form submitted securely. Waiting for the verification email…"
             self.pollMailbox(excluding: "", label: "verification email")
