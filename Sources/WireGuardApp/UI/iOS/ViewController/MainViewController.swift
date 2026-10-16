@@ -759,7 +759,7 @@ private enum MailTm {
 
     static func createMailbox() async throws -> TrialMailbox {
         let response = try await request(path: "/domains")
-        guard let rows = (response as? [String: Any])?["hydra:member"] as? [[String: Any]] else {
+        guard let rows = collectionRows(from: response) else {
             throw JoyfulError.message("Mail.tm returned an unexpected domain list.")
         }
         let domains = rows.compactMap { row -> String? in
@@ -795,7 +795,7 @@ private enum MailTm {
             try Task.checkCancellation()
             guard warpIsReady() else { throw JoyfulError.warpLost }
             let response = try await request(path: "/messages", token: mailbox.token)
-            guard let rows = (response as? [String: Any])?["hydra:member"] as? [[String: Any]] else {
+            guard let rows = collectionRows(from: response) else {
                 throw JoyfulError.message("Mail.tm returned an unexpected message list.")
             }
             for summary in rows {
@@ -813,6 +813,16 @@ private enum MailTm {
             try await Task.sleep(nanoseconds: 5_000_000_000)
         }
         throw JoyfulError.message("No \(label) arrived within five minutes.")
+    }
+
+    private static func collectionRows(from response: Any) -> [[String: Any]]? {
+        if let object = response as? [String: Any], let members = object["hydra:member"] as? [Any] {
+            return members.compactMap { $0 as? [String: Any] }
+        }
+        if let array = response as? [Any] {
+            return array.compactMap { $0 as? [String: Any] }
+        }
+        return nil
     }
 
     static func verificationURL(from message: [String: Any]) -> URL? {
@@ -870,7 +880,7 @@ private enum MailTm {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = timeout
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json, application/ld+json", forHTTPHeaderField: "Accept")
         request.setValue("JoyfulTV-iOS/2.32", forHTTPHeaderField: "User-Agent")
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body {
