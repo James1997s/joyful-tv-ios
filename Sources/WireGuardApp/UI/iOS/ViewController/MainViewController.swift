@@ -1024,6 +1024,8 @@ private final class VLCPlayerViewController: UIViewController {
             activityIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             activityIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
+        // Start every channel in immersive fullscreen; tapping the video reveals controls.
+        setControlsHidden(true)
     }
 
     private func scheduleControlsAutoHide() {
@@ -1144,7 +1146,7 @@ private final class VLCPlayerViewController: UIViewController {
         videoTrackIndexToRestore = nil
         wasPlaying = false
         cancelControlsAutoHide()
-        setControlsHidden(false)
+        setControlsHidden(true)
         attemptStartedAt = Date()
         statusLabel.isHidden = false
         statusLabel.text = "Connecting to channel…"
@@ -1170,7 +1172,6 @@ private final class VLCPlayerViewController: UIViewController {
             playPauseButton.setTitle("Pause", for: .normal)
             if !wasPlaying {
                 wasPlaying = true
-                setControlsHidden(false)
                 scheduleControlsAutoHide()
             }
         case .paused:
@@ -1189,14 +1190,12 @@ private final class VLCPlayerViewController: UIViewController {
         case .opening, .buffering:
             wasPlaying = false
             cancelControlsAutoHide()
-            setControlsHidden(false)
             statusLabel.isHidden = false
             statusLabel.text = "Loading \(channelTitle)…"
             if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
         case .stopped:
             wasPlaying = false
             cancelControlsAutoHide()
-            setControlsHidden(false)
             if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
         default:
             break
