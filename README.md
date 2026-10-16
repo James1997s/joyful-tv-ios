@@ -45,3 +45,4 @@ GitHub Actions is the canonical packaged build because it also performs entitlem
 ## Build limits
 
 The current sandbox is Linux and does not include Xcode. The native iOS build therefore runs on the GitHub-hosted macOS workflow. Testing playback and rotation still requires installing the resulting IPA on an iPhone 7/iOS 15.8.4 device.
+- The fullscreen player includes independent **Audio off/on** and **Video off/on** buttons. They disable or restore the active VLC track when that track is available.

@@ -852,10 +852,18 @@ private final class VLCPlayerViewController: UIViewController {
     private let warpButton = UIButton(type: .system)
     private let playPauseButton = UIButton(type: .system)
     private let retryButton = UIButton(type: .system)
+    private let audioTrackButton = UIButton(type: .system)
+    private let videoTrackButton = UIButton(type: .system)
     private var stateTimer: Timer?
     private var controlsHideTimer: Timer?
     private var controlsHidden = false
     private var wasPlaying = false
+    private var audioTrackDisabled = false
+    private var videoTrackDisabled = false
+    private var audioTrackStateInitialized = false
+    private var videoTrackStateInitialized = false
+    private var audioTrackIndexToRestore: Int32?
+    private var videoTrackIndexToRestore: Int32?
     private var attemptIndex = 0
     private var retryCount = 0
     private var attemptStartedAt = Date()
@@ -972,10 +980,15 @@ private final class VLCPlayerViewController: UIViewController {
         controls.spacing = 10
         playPauseButton.setTitle("Pause", for: .normal)
         playPauseButton.addTarget(self, action: #selector(togglePlayback), for: .touchUpInside)
-        retryButton.setTitle("Retry channel", for: .normal)
+        retryButton.setTitle("Retry", for: .normal)
+        retryButton.accessibilityLabel = "Retry channel"
         retryButton.isHidden = true
         retryButton.addTarget(self, action: #selector(retryChannel), for: .touchUpInside)
-        for button in [playPauseButton, retryButton] {
+        audioTrackButton.setTitle("Audio off", for: .normal)
+        audioTrackButton.addTarget(self, action: #selector(toggleAudioTrack), for: .touchUpInside)
+        videoTrackButton.setTitle("Video off", for: .normal)
+        videoTrackButton.addTarget(self, action: #selector(toggleVideoTrack), for: .touchUpInside)
+        for button in [playPauseButton, audioTrackButton, videoTrackButton, retryButton] {
             button.setTitleColor(navy, for: .normal)
             button.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
             button.backgroundColor = accent
@@ -983,7 +996,13 @@ private final class VLCPlayerViewController: UIViewController {
             button.contentEdgeInsets = UIEdgeInsets(top: 12, left: 10, bottom: 12, right: 10)
             button.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
         }
+        audioTrackButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .bold)
+        videoTrackButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .bold)
+        audioTrackButton.contentEdgeInsets = UIEdgeInsets(top: 12, left: 4, bottom: 12, right: 4)
+        videoTrackButton.contentEdgeInsets = UIEdgeInsets(top: 12, left: 4, bottom: 12, right: 4)
         controls.addArrangedSubview(playPauseButton)
+        controls.addArrangedSubview(audioTrackButton)
+        controls.addArrangedSubview(videoTrackButton)
         controls.addArrangedSubview(retryButton)
         bottomBar.addArrangedSubview(controls)
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
@@ -1054,9 +1073,75 @@ private final class VLCPlayerViewController: UIViewController {
         return button
     }
 
+    private func updateTrackButtons() {
+        let canToggle = !isClosing && (player.state == .playing || player.state == .paused)
+        let audioIDs = player.audioTrackIndexes.compactMap { ($0 as? NSNumber)?.int32Value ?? ($0 as? Int32) }.filter { $0 >= 0 }
+        let videoIDs = player.videoTrackIndexes.compactMap { ($0 as? NSNumber)?.int32Value ?? ($0 as? Int32) }.filter { $0 >= 0 }
+
+        if canToggle && !audioTrackStateInitialized && !audioIDs.isEmpty {
+            let current = player.currentAudioTrackIndex
+            audioTrackDisabled = current < 0
+            audioTrackIndexToRestore = current >= 0 ? current : audioIDs.first
+            audioTrackStateInitialized = true
+        }
+        if canToggle && !videoTrackStateInitialized && !videoIDs.isEmpty {
+            let current = player.currentVideoTrackIndex
+            videoTrackDisabled = current < 0
+            videoTrackIndexToRestore = current >= 0 ? current : videoIDs.first
+            videoTrackStateInitialized = true
+        }
+
+        audioTrackButton.isEnabled = canToggle && !audioIDs.isEmpty
+        audioTrackButton.setTitle(audioIDs.isEmpty ? "No audio" : (audioTrackDisabled ? "Audio on" : "Audio off"), for: .normal)
+        audioTrackButton.accessibilityLabel = audioIDs.isEmpty ? "No audio track available" : (audioTrackDisabled ? "Turn audio track on" : "Turn audio track off")
+        videoTrackButton.isEnabled = canToggle && !videoIDs.isEmpty
+        videoTrackButton.setTitle(videoIDs.isEmpty ? "No video" : (videoTrackDisabled ? "Video on" : "Video off"), for: .normal)
+        videoTrackButton.accessibilityLabel = videoIDs.isEmpty ? "No video track available" : (videoTrackDisabled ? "Turn video track on" : "Turn video track off")
+    }
+
+    @objc private func toggleAudioTrack() {
+        let ids = player.audioTrackIndexes.compactMap { ($0 as? NSNumber)?.int32Value ?? ($0 as? Int32) }.filter { $0 >= 0 }
+        guard !ids.isEmpty, player.state == .playing || player.state == .paused else { return }
+        if audioTrackDisabled {
+            guard let target = audioTrackIndexToRestore.flatMap({ ids.contains($0) ? $0 : nil }) ?? ids.first else { return }
+            player.currentAudioTrackIndex = target
+            audioTrackDisabled = false
+            audioTrackIndexToRestore = target
+        } else {
+            let current = player.currentAudioTrackIndex
+            audioTrackIndexToRestore = current >= 0 ? current : ids.first
+            player.currentAudioTrackIndex = -1
+            audioTrackDisabled = true
+        }
+        updateTrackButtons()
+    }
+
+    @objc private func toggleVideoTrack() {
+        let ids = player.videoTrackIndexes.compactMap { ($0 as? NSNumber)?.int32Value ?? ($0 as? Int32) }.filter { $0 >= 0 }
+        guard !ids.isEmpty, player.state == .playing || player.state == .paused else { return }
+        if videoTrackDisabled {
+            guard let target = videoTrackIndexToRestore.flatMap({ ids.contains($0) ? $0 : nil }) ?? ids.first else { return }
+            player.currentVideoTrackIndex = target
+            videoTrackDisabled = false
+            videoTrackIndexToRestore = target
+        } else {
+            let current = player.currentVideoTrackIndex
+            videoTrackIndexToRestore = current >= 0 ? current : ids.first
+            player.currentVideoTrackIndex = -1
+            videoTrackDisabled = true
+        }
+        updateTrackButtons()
+    }
+
     private func startAttempt() {
         guard urls.indices.contains(attemptIndex), !isClosing else { return }
         retryScheduled = false
+        audioTrackDisabled = false
+        videoTrackDisabled = false
+        audioTrackStateInitialized = false
+        videoTrackStateInitialized = false
+        audioTrackIndexToRestore = nil
+        videoTrackIndexToRestore = nil
         wasPlaying = false
         cancelControlsAutoHide()
         setControlsHidden(false)
@@ -1070,10 +1155,12 @@ private final class VLCPlayerViewController: UIViewController {
         player.drawable = videoSurface
         player.media = VLCMedia(url: urls[attemptIndex])
         player.play()
+        updateTrackButtons()
     }
 
     private func refreshPlaybackState() {
         guard !isClosing else { return }
+        updateTrackButtons()
         switch player.state {
         case .playing:
             retryScheduled = false
