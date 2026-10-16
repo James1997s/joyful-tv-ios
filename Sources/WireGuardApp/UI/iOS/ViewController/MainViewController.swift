@@ -1029,12 +1029,11 @@ private final class VLCPlayerViewController: UIViewController {
     }
 
     private func scheduleControlsAutoHide() {
-        cancelControlsAutoHide()
-        guard player.state == .playing, !isClosing else { return }
+        guard controlsHideTimer == nil, !controlsHidden, !isClosing else { return }
         controlsHideTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
-            guard let self, self.player.state == .playing else { return }
-            self.setControlsHidden(true)
+            guard let self, !self.isClosing, !self.controlsHidden else { return }
             self.controlsHideTimer = nil
+            self.setControlsHidden(true)
         }
     }
 
@@ -1044,12 +1043,16 @@ private final class VLCPlayerViewController: UIViewController {
     }
 
     private func setControlsHidden(_ hidden: Bool) {
-        guard controlsHidden != hidden else { return }
+        guard controlsHidden != hidden else {
+            if !hidden { scheduleControlsAutoHide() }
+            return
+        }
         controlsHidden = hidden
         topBar.isUserInteractionEnabled = !hidden
         bottomBar.isUserInteractionEnabled = !hidden
         topBar.accessibilityElementsHidden = hidden
         bottomBar.accessibilityElementsHidden = hidden
+        if hidden { cancelControlsAutoHide() } else { scheduleControlsAutoHide() }
         UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
             self.topBar.alpha = hidden ? 0 : 1
             self.bottomBar.alpha = hidden ? 0 : 1
@@ -1057,10 +1060,9 @@ private final class VLCPlayerViewController: UIViewController {
     }
 
     @objc private func toggleControls() {
-        let shouldHide = !controlsHidden && player.state == .playing
+        let shouldHide = !controlsHidden
         cancelControlsAutoHide()
         setControlsHidden(shouldHide)
-        if !shouldHide, player.state == .playing { scheduleControlsAutoHide() }
     }
 
     private func makePlayerButton(title: String) -> UIButton {
@@ -1163,6 +1165,8 @@ private final class VLCPlayerViewController: UIViewController {
     private func refreshPlaybackState() {
         guard !isClosing else { return }
         updateTrackButtons()
+        let hasVideoTrack = player.currentVideoTrackIndex >= 0
+        if hasVideoTrack { activityIndicator.stopAnimating() }
         switch player.state {
         case .playing:
             retryScheduled = false
@@ -1175,27 +1179,27 @@ private final class VLCPlayerViewController: UIViewController {
                 scheduleControlsAutoHide()
             }
         case .paused:
+            let justPaused = wasPlaying
             wasPlaying = false
-            cancelControlsAutoHide()
-            setControlsHidden(false)
+            if justPaused { setControlsHidden(false) }
             statusLabel.isHidden = false
             statusLabel.text = "Playback paused"
             activityIndicator.stopAnimating()
             playPauseButton.setTitle("Resume", for: .normal)
         case .error, .ended:
             wasPlaying = false
-            cancelControlsAutoHide()
-            setControlsHidden(false)
             tryFallbackOrRetry()
         case .opening, .buffering:
             wasPlaying = false
-            cancelControlsAutoHide()
-            statusLabel.isHidden = false
-            statusLabel.text = "Loading \(channelTitle)…"
+            if hasVideoTrack {
+                statusLabel.isHidden = true
+            } else {
+                statusLabel.isHidden = false
+                statusLabel.text = "Loading \(channelTitle)…"
+            }
             if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
         case .stopped:
             wasPlaying = false
-            cancelControlsAutoHide()
             if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
         default:
             break
