@@ -844,6 +844,8 @@ private final class VLCPlayerViewController: UIViewController {
     private let onWarpToggle: () -> Void
     private let player = VLCMediaPlayer()
     private let videoSurface = UIView()
+    private let topBar = UIStackView()
+    private let bottomBar = UIStackView()
     private let titleLabel = UILabel()
     private let statusLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .large)
@@ -851,6 +853,9 @@ private final class VLCPlayerViewController: UIViewController {
     private let playPauseButton = UIButton(type: .system)
     private let retryButton = UIButton(type: .system)
     private var stateTimer: Timer?
+    private var controlsHideTimer: Timer?
+    private var controlsHidden = false
+    private var wasPlaying = false
     private var attemptIndex = 0
     private var retryCount = 0
     private var attemptStartedAt = Date()
@@ -897,14 +902,23 @@ private final class VLCPlayerViewController: UIViewController {
         warpButton.backgroundColor = isOn ? accent : UIColor(white: 0.78, alpha: 1)
         warpButton.isEnabled = !isChanging
         warpButton.accessibilityLabel = isChanging ? "WARP changing state" : (isOn ? "WARP connected; tap to disconnect" : "WARP disconnected; tap to connect")
+        if isChanging {
+            cancelControlsAutoHide()
+            setControlsHidden(false)
+        } else if wasPlaying {
+            scheduleControlsAutoHide()
+        }
     }
 
     private func buildPlayerInterface() {
         videoSurface.translatesAutoresizingMaskIntoConstraints = false
         videoSurface.backgroundColor = .black
+        videoSurface.isUserInteractionEnabled = true
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
+        tapGesture.cancelsTouchesInView = false
+        videoSurface.addGestureRecognizer(tapGesture)
         view.addSubview(videoSurface)
 
-        let topBar = UIStackView()
         topBar.axis = .horizontal
         topBar.alignment = .center
         topBar.spacing = 8
@@ -943,7 +957,6 @@ private final class VLCPlayerViewController: UIViewController {
         activityIndicator.color = accent
         activityIndicator.startAnimating()
 
-        let bottomBar = UIStackView()
         bottomBar.axis = .vertical
         bottomBar.alignment = .fill
         bottomBar.spacing = 8
@@ -994,6 +1007,41 @@ private final class VLCPlayerViewController: UIViewController {
         ])
     }
 
+    private func scheduleControlsAutoHide() {
+        cancelControlsAutoHide()
+        guard player.state == .playing, !isClosing else { return }
+        controlsHideTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+            guard let self, self.player.state == .playing else { return }
+            self.setControlsHidden(true)
+            self.controlsHideTimer = nil
+        }
+    }
+
+    private func cancelControlsAutoHide() {
+        controlsHideTimer?.invalidate()
+        controlsHideTimer = nil
+    }
+
+    private func setControlsHidden(_ hidden: Bool) {
+        guard controlsHidden != hidden else { return }
+        controlsHidden = hidden
+        topBar.isUserInteractionEnabled = !hidden
+        bottomBar.isUserInteractionEnabled = !hidden
+        topBar.accessibilityElementsHidden = hidden
+        bottomBar.accessibilityElementsHidden = hidden
+        UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.topBar.alpha = hidden ? 0 : 1
+            self.bottomBar.alpha = hidden ? 0 : 1
+        }
+    }
+
+    @objc private func toggleControls() {
+        let shouldHide = !controlsHidden && player.state == .playing
+        cancelControlsAutoHide()
+        setControlsHidden(shouldHide)
+        if !shouldHide, player.state == .playing { scheduleControlsAutoHide() }
+    }
+
     private func makePlayerButton(title: String) -> UIButton {
         let button = UIButton(type: .system)
         button.setTitle(title, for: .normal)
@@ -1009,6 +1057,9 @@ private final class VLCPlayerViewController: UIViewController {
     private func startAttempt() {
         guard urls.indices.contains(attemptIndex), !isClosing else { return }
         retryScheduled = false
+        wasPlaying = false
+        cancelControlsAutoHide()
+        setControlsHidden(false)
         attemptStartedAt = Date()
         statusLabel.isHidden = false
         statusLabel.text = "Connecting to channel…"
@@ -1030,18 +1081,35 @@ private final class VLCPlayerViewController: UIViewController {
             statusLabel.isHidden = true
             activityIndicator.stopAnimating()
             playPauseButton.setTitle("Pause", for: .normal)
+            if !wasPlaying {
+                wasPlaying = true
+                setControlsHidden(false)
+                scheduleControlsAutoHide()
+            }
         case .paused:
+            wasPlaying = false
+            cancelControlsAutoHide()
+            setControlsHidden(false)
             statusLabel.isHidden = false
             statusLabel.text = "Playback paused"
             activityIndicator.stopAnimating()
             playPauseButton.setTitle("Resume", for: .normal)
         case .error, .ended:
+            wasPlaying = false
+            cancelControlsAutoHide()
+            setControlsHidden(false)
             tryFallbackOrRetry()
         case .opening, .buffering:
+            wasPlaying = false
+            cancelControlsAutoHide()
+            setControlsHidden(false)
             statusLabel.isHidden = false
             statusLabel.text = "Loading \(channelTitle)…"
             if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
         case .stopped:
+            wasPlaying = false
+            cancelControlsAutoHide()
+            setControlsHidden(false)
             if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
         default:
             break
@@ -1051,6 +1119,9 @@ private final class VLCPlayerViewController: UIViewController {
     private func tryFallbackOrRetry() {
         guard !retryScheduled else { return }
         retryScheduled = true
+        wasPlaying = false
+        cancelControlsAutoHide()
+        setControlsHidden(false)
         activityIndicator.stopAnimating()
         if attemptIndex + 1 < urls.count {
             attemptIndex += 1
@@ -1078,6 +1149,7 @@ private final class VLCPlayerViewController: UIViewController {
         isClosing = true
         stateTimer?.invalidate()
         stateTimer = nil
+        cancelControlsAutoHide()
         player.stop()
         player.drawable = nil
     }

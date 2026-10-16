@@ -13,6 +13,7 @@ The WARP profile is intentionally committed in this public repository at the own
 ## Playback and guide
 
 - Full-screen, touch-first VLC playback via [MobileVLCKit 3.7.4](https://github.com/videolan/vlckit/tree/3.7.4), a stable prebuilt iOS framework with a minimum iOS version of 9.0.
+- Full-screen player controls fade out five seconds after playback starts; tap the video to reveal them again. Controls remain visible while paused, buffering, or recovering from a stream error.
 - Uses provider direct-source/container metadata when available, tries the selected HLS (`.m3u8`) or TS (`.ts`) mode first, then tries alternate stream URLs, and performs up to three exponential-backoff retries. The **Video: HLS/TS** guide control changes the preferred mode.
 - VLC supports substantially more stream containers and codecs than AVPlayer, but no player can guarantee every IPTV feed: provider outages, malformed streams, DRM, unsupported codec profiles, and iPhone 7 decoding limits can still prevent playback.
 - Xtream-compatible validation, Live TV categories/channels, search, favorites, refresh, and short EPG preview when supported by the provider. The portal is `http://kytv.xyz`; credentials sent to that host are not protected by TLS on that leg. WARP encrypts the device-to-WARP leg only.
