@@ -1,5 +1,6 @@
 // Joyful TV iOS port. WireGuardKit/WireGuardNetworkExtension remain under their upstream MIT license.
 import UIKit
+import AVFoundation
 import WebKit
 import MobileVLCKit
 import CryptoKit
@@ -39,7 +40,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private var epgCache: [String: String] = [:]
     private var credentials: JoyfulCredentials?
     private var currentStream = "m3u8"
-    private weak var playbackController: VLCPlayerViewController?
+    private weak var playbackController: IPTVPlayerViewController?
     private let warpTunnelName = "JoyfulWARP"
     private var didStart = false
     private var warpStartInProgress = false
@@ -794,7 +795,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             statusLabel.text = "Channel has no playable stream URL."; return
         }
         fetchEpg(for: channel)
-        let controller = VLCPlayerViewController(channelTitle: channel.name, urls: urls, warpIsOn: warpReady) { [weak self] in
+        let controller = IPTVPlayerViewController(channelTitle: channel.name, urls: urls, warpIsOn: warpReady) { [weak self] in
             self?.toggleWARP()
         }
         playbackController = controller
@@ -836,13 +837,16 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
 }
 
 @MainActor
-private final class VLCPlayerViewController: UIViewController {
+private final class IPTVPlayerViewController: UIViewController {
     private let navy = UIColor(red: 15/255, green: 17/255, blue: 43/255, alpha: 1)
     private let accent = UIColor(red: 38/255, green: 210/255, blue: 232/255, alpha: 1)
     private let channelTitle: String
     private let urls: [URL]
     private let onWarpToggle: () -> Void
     private let player = VLCMediaPlayer()
+    private var nativePlayer: AVPlayer?
+    private var nativePlayerLayer: AVPlayerLayer?
+    private var isUsingNativePlayer = false
     private let videoSurface = UIView()
     private let topBar = UIStackView()
     private let bottomBar = UIStackView()
@@ -890,12 +894,16 @@ private final class VLCPlayerViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .black
         buildPlayerInterface()
-        player.drawable = videoSurface
         attemptIndex = 0
         startAttempt()
         stateTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.refreshPlaybackState()
         }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        nativePlayerLayer?.frame = videoSurface.bounds
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -1078,6 +1086,16 @@ private final class VLCPlayerViewController: UIViewController {
     }
 
     private func updateTrackButtons() {
+        if isUsingNativePlayer {
+            let canToggle = !isClosing && nativePlayer?.currentItem?.status == .readyToPlay
+            audioTrackButton.isEnabled = canToggle
+            audioTrackButton.setTitle(audioTrackDisabled ? "Audio on" : "Audio off", for: .normal)
+            audioTrackButton.accessibilityLabel = audioTrackDisabled ? "Turn audio on" : "Turn audio off"
+            videoTrackButton.isEnabled = canToggle
+            videoTrackButton.setTitle(videoTrackDisabled ? "Video on" : "Video off", for: .normal)
+            videoTrackButton.accessibilityLabel = videoTrackDisabled ? "Turn video on" : "Turn video off"
+            return
+        }
         let canToggle = !isClosing && (player.state == .playing || player.state == .paused)
         let audioIDs = player.audioTrackIndexes.compactMap { ($0 as? NSNumber)?.int32Value ?? ($0 as? Int32) }.filter { $0 >= 0 }
         let videoIDs = player.videoTrackIndexes.compactMap { ($0 as? NSNumber)?.int32Value ?? ($0 as? Int32) }.filter { $0 >= 0 }
@@ -1104,6 +1122,12 @@ private final class VLCPlayerViewController: UIViewController {
     }
 
     @objc private func toggleAudioTrack() {
+        if isUsingNativePlayer, let nativePlayer, nativePlayer.currentItem?.status == .readyToPlay {
+            audioTrackDisabled.toggle()
+            nativePlayer.isMuted = audioTrackDisabled
+            updateTrackButtons()
+            return
+        }
         let ids = player.audioTrackIndexes.compactMap { ($0 as? NSNumber)?.int32Value ?? ($0 as? Int32) }.filter { $0 >= 0 }
         guard !ids.isEmpty, player.state == .playing || player.state == .paused else { return }
         if audioTrackDisabled {
@@ -1121,6 +1145,12 @@ private final class VLCPlayerViewController: UIViewController {
     }
 
     @objc private func toggleVideoTrack() {
+        if isUsingNativePlayer, let nativePlayerLayer, nativePlayer?.currentItem?.status == .readyToPlay {
+            videoTrackDisabled.toggle()
+            nativePlayerLayer.isHidden = videoTrackDisabled
+            updateTrackButtons()
+            return
+        }
         let ids = player.videoTrackIndexes.compactMap { ($0 as? NSNumber)?.int32Value ?? ($0 as? Int32) }.filter { $0 >= 0 }
         guard !ids.isEmpty, player.state == .playing || player.state == .paused else { return }
         if videoTrackDisabled {
@@ -1137,7 +1167,7 @@ private final class VLCPlayerViewController: UIViewController {
         updateTrackButtons()
     }
 
-    private func startAttempt() {
+    private func startAttempt(forceVLC: Bool = false) {
         guard urls.indices.contains(attemptIndex), !isClosing else { return }
         retryScheduled = false
         audioTrackDisabled = false
@@ -1156,15 +1186,55 @@ private final class VLCPlayerViewController: UIViewController {
         retryButton.isHidden = true
         playPauseButton.setTitle("Pause", for: .normal)
         player.stop()
-        player.drawable = videoSurface
-        player.media = VLCMedia(url: urls[attemptIndex])
-        player.play()
+        player.drawable = nil
+        stopNativePlayback()
+        let url = urls[attemptIndex]
+        if !forceVLC && Self.isHLSURL(url) {
+            startNativePlayback(url)
+        } else {
+            player.drawable = videoSurface
+            player.media = VLCMedia(url: url)
+            player.play()
+        }
         updateTrackButtons()
+    }
+
+    private static func isHLSURL(_ url: URL) -> Bool {
+        let pathExtension = url.pathExtension.lowercased()
+        return pathExtension == "m3u8" || pathExtension == "m3u"
+    }
+
+    private func startNativePlayback(_ url: URL) {
+        let item = AVPlayerItem(url: url)
+        let nativePlayer = AVPlayer(playerItem: item)
+        nativePlayer.automaticallyWaitsToMinimizeStalling = true
+        let layer = AVPlayerLayer(player: nativePlayer)
+        layer.videoGravity = .resizeAspect
+        layer.frame = videoSurface.bounds
+        videoSurface.layer.addSublayer(layer)
+        self.nativePlayer = nativePlayer
+        nativePlayerLayer = layer
+        isUsingNativePlayer = true
+        nativePlayer.play()
+    }
+
+    private func stopNativePlayback() {
+        nativePlayer?.pause()
+        nativePlayer?.replaceCurrentItem(with: nil)
+        nativePlayerLayer?.player = nil
+        nativePlayerLayer?.removeFromSuperlayer()
+        nativePlayer = nil
+        nativePlayerLayer = nil
+        isUsingNativePlayer = false
     }
 
     private func refreshPlaybackState() {
         guard !isClosing else { return }
         updateTrackButtons()
+        if isUsingNativePlayer {
+            refreshNativePlaybackState()
+            return
+        }
         let hasVideoTrack = player.currentVideoTrackIndex >= 0
         if hasVideoTrack { activityIndicator.stopAnimating() }
         switch player.state {
@@ -1206,6 +1276,49 @@ private final class VLCPlayerViewController: UIViewController {
         }
     }
 
+    private func refreshNativePlaybackState() {
+        guard let nativePlayer, let item = nativePlayer.currentItem else {
+            tryFallbackOrRetry()
+            return
+        }
+        switch item.status {
+        case .unknown:
+            statusLabel.isHidden = false
+            statusLabel.text = "Connecting to channel…"
+            activityIndicator.startAnimating()
+            if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
+        case .readyToPlay:
+            switch nativePlayer.timeControlStatus {
+            case .playing:
+                retryScheduled = false
+                retryCount = 0
+                wasPlaying = true
+                statusLabel.isHidden = true
+                activityIndicator.stopAnimating()
+                playPauseButton.setTitle("Pause", for: .normal)
+            case .waitingToPlayAtSpecifiedRate:
+                statusLabel.isHidden = false
+                statusLabel.text = wasPlaying ? "Buffering \(channelTitle)…" : "Starting \(channelTitle)…"
+                activityIndicator.startAnimating()
+                if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
+            case .paused:
+                let justPaused = wasPlaying
+                wasPlaying = false
+                if justPaused { setControlsHidden(false) }
+                statusLabel.isHidden = false
+                statusLabel.text = "Playback paused"
+                activityIndicator.stopAnimating()
+                playPauseButton.setTitle("Resume", for: .normal)
+            @unknown default:
+                break
+            }
+        case .failed:
+            tryFallbackOrRetry()
+        @unknown default:
+            break
+        }
+    }
+
     private func tryFallbackOrRetry() {
         guard !retryScheduled else { return }
         retryScheduled = true
@@ -1213,6 +1326,10 @@ private final class VLCPlayerViewController: UIViewController {
         cancelControlsAutoHide()
         setControlsHidden(false)
         activityIndicator.stopAnimating()
+        if isUsingNativePlayer {
+            startAttempt(forceVLC: true)
+            return
+        }
         if attemptIndex + 1 < urls.count {
             attemptIndex += 1
             statusLabel.isHidden = false
@@ -1242,6 +1359,7 @@ private final class VLCPlayerViewController: UIViewController {
         cancelControlsAutoHide()
         player.stop()
         player.drawable = nil
+        stopNativePlayback()
     }
 
     @objc private func closePlayer() {
@@ -1252,6 +1370,15 @@ private final class VLCPlayerViewController: UIViewController {
     @objc private func toggleWARP() { onWarpToggle() }
 
     @objc private func togglePlayback() {
+        if isUsingNativePlayer, let nativePlayer {
+            if nativePlayer.timeControlStatus == .playing || nativePlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                nativePlayer.pause()
+            } else {
+                nativePlayer.play()
+            }
+            refreshNativePlaybackState()
+            return
+        }
         if player.state == .playing || player.state == .buffering {
             player.pause()
         } else {
