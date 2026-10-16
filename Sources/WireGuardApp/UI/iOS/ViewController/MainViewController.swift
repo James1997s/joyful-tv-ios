@@ -1,7 +1,7 @@
 // Joyful TV iOS port. WireGuardKit/WireGuardNetworkExtension remain under their upstream MIT license.
 import UIKit
 import WebKit
-import AVKit
+import MobileVLCKit
 import CryptoKit
 import Security
 import NetworkExtension
@@ -20,6 +20,8 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private let categoryButton = UIButton(type: .system)
     private let favoritesButton = UIButton(type: .system)
     private let refreshButton = UIButton(type: .system)
+    private let warpToggleButton = UIButton(type: .system)
+    private let streamModeButton = UIButton(type: .system)
     private let renewButton = UIButton(type: .system)
     private let mailTmAttributionButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .plain)
@@ -37,11 +39,15 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private var epgCache: [String: String] = [:]
     private var credentials: JoyfulCredentials?
     private var currentStream = "m3u8"
+    private weak var playbackController: VLCPlayerViewController?
     private let warpTunnelName = "JoyfulWARP"
     private var didStart = false
     private var warpStartInProgress = false
+    private var warpStopInProgress = false
     private var warpReady = false
-    private var trialStage: TrialStage = .idle
+        private var forceTrialAfterWARP = false
+        private var trialGeneration = 0
+        private var trialStage: TrialStage = .idle
     private var temporaryMailbox: TrialMailbox?
     private var mailboxAddress = ""
     private var firstMessageID = ""
@@ -58,7 +64,8 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         hiddenWebView.navigationDelegate = self
         buildInterface()
         NotificationCenter.default.addObserver(self, selector: #selector(vpnStatusChanged), name: .NEVPNStatusDidChange, object: nil)
-        // No signup, mailbox, or IPTV request is allowed until the profile is connected.
+        // WARP starts on launch. Saved IPTV access may continue without it; signup,
+        // mailbox polling, and new-credential requests wait for verified WARP.
         beginStartupGate()
     }
 
@@ -76,9 +83,17 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         title.textColor = .white
         title.accessibilityTraits = .header
 
+        let titleRow = UIStackView()
+        titleRow.axis = .horizontal
+        titleRow.alignment = .center
+        titleRow.distribution = .fill
+        titleRow.spacing = 8
+        titleRow.addArrangedSubview(title)
+        titleRow.addArrangedSubview(warpToggleButton)
+
         statusLabel.text = "Preparing secure connection…"
         statusLabel.textColor = UIColor(white: 0.86, alpha: 1)
-        statusLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        statusLabel.font = .systemFont(ofSize: 13, weight: .medium)
         statusLabel.numberOfLines = 0
         statusLabel.accessibilityLabel = "Connection and app status"
 
@@ -88,9 +103,11 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
 
         configureButton(actionButton, title: "Request TV login", action: #selector(primaryAction))
         configureButton(retryButton, title: "Retry secure connection", action: #selector(retryStartup))
-        configureButton(categoryButton, title: "All channels  ▾", action: #selector(chooseCategory))
-        configureButton(favoritesButton, title: "My Channels", action: #selector(toggleFavorites))
-        configureButton(refreshButton, title: "Refresh", action: #selector(refreshCatalog))
+        configureCompactButton(categoryButton, title: "All channels ▾", action: #selector(chooseCategory))
+        configureCompactButton(favoritesButton, title: "My Channels", action: #selector(toggleFavorites))
+        configureCompactButton(refreshButton, title: "Refresh", action: #selector(refreshCatalog))
+        configureCompactButton(streamModeButton, title: "Video: HLS", action: #selector(toggleStreamMode))
+        configureWarpToggleButton(warpToggleButton)
         configureButton(renewButton, title: "Renew login", action: #selector(renewLogin))
         mailTmAttributionButton.setTitle("Temporary email by Mail.tm", for: .normal)
         mailTmAttributionButton.setTitleColor(UIColor.white.withAlphaComponent(0.72), for: .normal)
@@ -107,20 +124,22 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         categoryButton.isHidden = true
         favoritesButton.isHidden = true
         refreshButton.isHidden = true
+        streamModeButton.isHidden = true
         renewButton.isHidden = true
+        mailTmAttributionButton.isHidden = true
         tableView.dataSource = self
         tableView.delegate = self
         tableView.backgroundColor = navy
         tableView.separatorColor = UIColor.white.withAlphaComponent(0.12)
-        tableView.rowHeight = 68
+        tableView.rowHeight = 56
         tableView.keyboardDismissMode = .onDrag
         tableView.accessibilityLabel = "Live TV channels"
         tableView.isHidden = true
 
         header.axis = .vertical
-        header.spacing = 9
+        header.spacing = 4
         header.alignment = .fill
-        header.addArrangedSubview(title)
+        header.addArrangedSubview(titleRow)
         header.addArrangedSubview(statusLabel)
         header.addArrangedSubview(progressView)
         header.addArrangedSubview(actionButton)
@@ -129,14 +148,15 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         header.addArrangedSubview(mailTmAttributionButton)
 
         controls.axis = .horizontal
-        controls.spacing = 7
+        controls.spacing = 4
         controls.distribution = .fillEqually
         controls.addArrangedSubview(categoryButton)
         controls.addArrangedSubview(favoritesButton)
         controls.addArrangedSubview(refreshButton)
+        controls.addArrangedSubview(streamModeButton)
 
         content.axis = .vertical
-        content.spacing = 8
+        content.spacing = 4
         content.translatesAutoresizingMaskIntoConstraints = false
         content.addArrangedSubview(header)
         content.addArrangedSubview(controls)
@@ -149,10 +169,11 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 14),
             content.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
-            content.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            content.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            tableView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200)
+            content.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            content.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -6),
+            searchBar.heightAnchor.constraint(lessThanOrEqualToConstant: 44)
         ])
+        updateWarpToggle()
     }
 
     private func configureButton(_ button: UIButton, title: String, action: Selector) {
@@ -166,12 +187,38 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         button.addTarget(self, action: action, for: .touchUpInside)
     }
 
+    private func configureCompactButton(_ button: UIButton, title: String, action: Selector) {
+        button.setTitle(title, for: .normal)
+        button.setTitleColor(navy, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 12, weight: .bold)
+        button.titleLabel?.adjustsFontSizeToFitWidth = true
+        button.titleLabel?.minimumScaleFactor = 0.72
+        button.backgroundColor = accent
+        button.layer.cornerRadius = 10
+        button.contentEdgeInsets = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 4)
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        button.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    private func configureWarpToggleButton(_ button: UIButton) {
+        button.setTitleColor(navy, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 12, weight: .heavy)
+        button.titleLabel?.adjustsFontSizeToFitWidth = true
+        button.titleLabel?.minimumScaleFactor = 0.8
+        button.layer.cornerRadius = 11
+        button.contentEdgeInsets = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
+        button.widthAnchor.constraint(equalToConstant: 92).isActive = true
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        button.addTarget(self, action: #selector(toggleWARP), for: .touchUpInside)
+    }
+
     // MARK: WARP gate
 
     private func beginStartupGate() {
-        guard !warpStartInProgress else { return }
+        guard !warpStartInProgress, !warpStopInProgress else { return }
         warpStartInProgress = true
         didStart = false
+        updateWarpToggle()
         retryButton.isHidden = true
         actionButton.isHidden = true
         statusLabel.text = "Starting WARP. Approve the iOS VPN prompt if it appears…"
@@ -244,6 +291,8 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
                     }
                     self.warpReady = true
                     self.warpStartInProgress = false
+                    self.warpStopInProgress = false
+                    self.updateWarpToggle()
                     self.progressView.setProgress(0.35, animated: true)
                     self.statusLabel.text = "WARP connected and verified."
                     await self.continueOnlyAfterWARP()
@@ -260,6 +309,11 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private func continueOnlyAfterWARP() async {
         guard warpReady, !didStart else { return }
         didStart = true
+        if forceTrialAfterWARP {
+            forceTrialAfterWARP = false
+            startTrial()
+            return
+        }
         if let saved = SecureCredentialVault.load(), saved.expiresAt > Date() {
             credentials = saved
             await loadCatalog()
@@ -272,7 +326,19 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private func warpStartFailed(_ message: String) {
         warpReady = false
         warpStartInProgress = false
+        warpStopInProgress = false
         gateTask?.cancel()
+        updateWarpToggle()
+        if let saved = SecureCredentialVault.load(), saved.expiresAt > Date() {
+            credentials = saved
+            progressView.isHidden = true
+            actionButton.isHidden = true
+            retryButton.isHidden = true
+            mailTmAttributionButton.isHidden = true
+            statusLabel.text = "WARP is off. Live TV works without it; connect WARP to request new credentials."
+            Task { await loadCatalog() }
+            return
+        }
         statusLabel.text = message
         progressView.isHidden = true
         actionButton.isHidden = true
@@ -282,19 +348,73 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         categoryButton.isHidden = true
         favoritesButton.isHidden = true
         refreshButton.isHidden = true
+        streamModeButton.isHidden = true
+        renewButton.isHidden = true
+        mailTmAttributionButton.isHidden = true
         trialTask?.cancel()
     }
 
     @objc private func retryStartup() { beginStartupGate() }
 
+    @objc private func toggleWARP() {
+        guard !warpStartInProgress, !warpStopInProgress else { return }
+        if warpReady {
+            guard let manager = tunnelsManager, let tunnel = manager.tunnel(named: warpTunnelName) else {
+                warpReady = false
+                updateWarpToggle()
+                statusLabel.text = "WARP is off. Live TV can continue; connect WARP to request new credentials."
+                return
+            }
+            warpReady = false
+            warpStopInProgress = true
+            trialGeneration &+= 1
+            if trialStage != .idle || temporaryMailbox != nil {
+                trialTask?.cancel()
+                trialTask = nil
+                trialStage = .idle
+                temporaryMailbox = nil
+                progressView.isHidden = true
+                statusLabel.text = "WARP turned off. Credential requests stopped; Live TV can continue."
+            } else {
+                statusLabel.text = "Turning WARP off. Live TV traffic can continue."
+            }
+            updateWarpToggle()
+            manager.startDeactivation(of: tunnel)
+        } else {
+            beginStartupGate()
+        }
+    }
+
     @objc private func vpnStatusChanged() {
         guard let manager = tunnelsManager else { return }
         manager.refreshStatuses()
-        if manager.tunnel(named: warpTunnelName)?.status == .inactive, warpReady {
+        if manager.tunnel(named: warpTunnelName)?.status == .inactive {
+            let wasReady = warpReady
             warpReady = false
-            trialTask?.cancel()
-            warpStartFailed("WARP disconnected. Further credential and IPTV requests are blocked until it reconnects.")
+            warpStopInProgress = false
+            trialGeneration &+= 1
+            if trialStage != .idle || temporaryMailbox != nil {
+                trialTask?.cancel()
+                trialTask = nil
+                trialStage = .idle
+                temporaryMailbox = nil
+                progressView.isHidden = true
+                statusLabel.text = "WARP disconnected. Credential requests stopped; saved Live TV can continue."
+            } else if wasReady {
+                statusLabel.text = "WARP is off · Live TV continues. Connect WARP to request new credentials."
+            }
+            updateWarpToggle()
         }
+    }
+
+    private func updateWarpToggle() {
+        let transitioning = warpStartInProgress || warpStopInProgress
+        let title = transitioning ? "WARP …" : (warpReady ? "WARP ON" : "WARP OFF")
+        warpToggleButton.setTitle(title, for: .normal)
+        warpToggleButton.backgroundColor = warpReady ? accent : UIColor(white: 0.78, alpha: 1)
+        warpToggleButton.isEnabled = !transitioning
+        warpToggleButton.accessibilityLabel = transitioning ? "WARP changing state" : (warpReady ? "WARP connected; tap to disconnect" : "WARP disconnected; tap to connect")
+        playbackController?.setWARPState(isOn: warpReady, isChanging: transitioning)
     }
 
     private func verifyCloudflareWARP() async -> Bool {
@@ -357,16 +477,22 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
 
     private func startTrial() {
         guard warpReady else {
-            warpStartFailed("WARP is not connected. No mailbox or IPTV credentials were requested.")
+            forceTrialAfterWARP = true
+            statusLabel.text = "WARP is required for new credentials. Connecting before starting the email flow…"
+            beginStartupGate()
             return
         }
+        forceTrialAfterWARP = false
+        trialGeneration &+= 1
+        let generation = trialGeneration
         trialTask?.cancel()
         discardMailbox()
-        trialStage = .idle
+        trialStage = .openingForm
         progressView.isHidden = false
         progressView.setProgress(0.38, animated: true)
         actionButton.isHidden = true
         retryButton.isHidden = true
+        mailTmAttributionButton.isHidden = false
         statusLabel.text = "WARP is on. Creating your temporary mailbox…"
         trialTask = Task { [weak self] in
             guard let self else { return }
@@ -374,8 +500,9 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             do {
                 let mailbox = try await MailTm.createMailbox()
                 createdMailbox = mailbox
-                self.temporaryMailbox = mailbox
                 try Task.checkCancellation()
+                guard self.trialGeneration == generation else { throw CancellationError() }
+                self.temporaryMailbox = mailbox
                 guard self.warpReady else { throw JoyfulError.warpLost }
                 self.mailboxAddress = mailbox.address
                 self.trialStage = .openingForm
@@ -384,12 +511,12 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             } catch is CancellationError {
                 if let createdMailbox {
                     if self.temporaryMailbox?.id == createdMailbox.id { self.discardMailbox() }
-                    else { Task { await MailTm.deleteMailbox(createdMailbox) } }
+                    else if self.warpReady { Task { await MailTm.deleteMailbox(createdMailbox) } }
                 }
             } catch {
                 if let createdMailbox {
                     if self.temporaryMailbox?.id == createdMailbox.id { self.discardMailbox() }
-                    else { Task { await MailTm.deleteMailbox(createdMailbox) } }
+                    else if self.warpReady { Task { await MailTm.deleteMailbox(createdMailbox) } }
                 }
                 self.showTrialFailure("Could not create the temporary inbox: \(error.localizedDescription)")
             }
@@ -399,10 +526,10 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         switch trialStage {
         case .openingForm:
-            guard warpReady else { warpStartFailed("WARP disconnected before the signup. No credentials were requested."); return }
+            guard warpReady else { showTrialFailure("WARP disconnected before the signup. No new credentials were requested."); return }
             submitTrialForm(in: webView)
         case .confirming:
-            guard warpReady else { warpStartFailed("WARP disconnected before credentials were fetched."); return }
+            guard warpReady else { showTrialFailure("WARP disconnected before the account email was fetched."); return }
             trialStage = .waitingForCredentials
             statusLabel.text = "Email confirmed. Waiting for your IPTV login…"
             pollMailbox(excluding: firstMessageID, label: "account details")
@@ -426,9 +553,11 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
           return JSON.stringify({ok:true});
         })()
         """
+        let generation = trialGeneration
         webView.evaluateJavaScript(script) { [weak self] result, error in
             guard let self else { return }
-            guard self.warpReady else { self.warpStartFailed("WARP disconnected before credentials were fetched."); return }
+            guard self.trialGeneration == generation else { return }
+            guard self.warpReady else { self.showTrialFailure("WARP disconnected before the account email was fetched."); return }
             let raw = result as? String ?? ""
             if error != nil || !raw.contains("\"ok\":true") {
                 self.showTrialFailure("The trial form could not be submitted. Check the form and retry.")
@@ -442,12 +571,13 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     }
 
     private func pollMailbox(excluding excludedID: String, label: String) {
-        guard warpReady else { warpStartFailed("WARP disconnected. No credentials were fetched."); return }
+        guard warpReady else { showTrialFailure("WARP disconnected. No account credentials were fetched."); return }
         trialTask?.cancel()
         guard let mailbox = temporaryMailbox else {
             showTrialFailure("The temporary mailbox is no longer available. Please try again.")
             return
         }
+        let generation = trialGeneration
         trialTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -455,6 +585,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
                     DispatchQueue.main.async { self?.statusLabel.text = text }
                 })
                 try Task.checkCancellation()
+                guard self.trialGeneration == generation else { return }
                 guard self.temporaryMailbox?.id == mailbox.id else { return }
                 guard self.warpReady else { throw JoyfulError.warpLost }
                 if self.trialStage == .waitingForVerification {
@@ -474,6 +605,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
                     self.credentials = saved
                     self.discardMailbox()
                     self.trialStage = .idle
+                    self.trialGeneration &+= 1
                     self.statusLabel.text = "WARP is on. Account details saved securely for 24 hours."
                     self.progressView.setProgress(1, animated: true)
                     await self.loadCatalog()
@@ -491,10 +623,13 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private func discardMailbox() {
         guard let mailbox = temporaryMailbox else { return }
         temporaryMailbox = nil
+        guard warpReady else { return }
         Task { await MailTm.deleteMailbox(mailbox) }
     }
 
     private func showTrialFailure(_ message: String) {
+        trialGeneration &+= 1
+        trialStage = .idle
         progressView.isHidden = true
         statusLabel.text = "\(message)\nWARP must remain connected before trying again."
         actionButton.setTitle("Try again", for: .normal)
@@ -503,11 +638,18 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     }
 
     @objc private func primaryAction() {
-        guard warpReady else { beginStartupGate(); return }
+        guard warpReady else {
+            if actionButton.title(for: .normal) != "Retry loading channels" { forceTrialAfterWARP = true }
+            beginStartupGate()
+            return
+        }
         actionButton.setTitle("Request TV login", for: .normal)
         startTrial()
     }
-    @objc private func renewLogin() { startTrial() }
+    @objc private func renewLogin() {
+        forceTrialAfterWARP = true
+        startTrial()
+    }
     @objc private func openMailTmWebsite() {
         guard let url = URL(string: "https://mail.tm") else { return }
         UIApplication.shared.open(url)
@@ -516,14 +658,12 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     // MARK: IPTV
 
     private func loadCatalog() async {
-        guard warpReady else { warpStartFailed("WARP disconnected. IPTV requests were stopped."); return }
         guard let credentials else { return }
         progressView.isHidden = false
         progressView.setProgress(0.55, animated: true)
-        statusLabel.text = "WARP is on. Loading live channels…"
+        statusLabel.text = "\(warpReady ? "WARP is on" : "WARP is off") · Loading live channels…"
         do {
             let result = try await XtreamClient(portal: credentials.portal, username: credentials.username, password: credentials.password).loadLiveCatalog()
-            guard warpReady else { throw JoyfulError.warpLost }
             categories = result.categories
             channels = result.channels
             favoriteIDs = JoyfulFavorites.load(account: credentials)
@@ -533,10 +673,13 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             categoryButton.isHidden = false
             favoritesButton.isHidden = false
             refreshButton.isHidden = false
+            streamModeButton.isHidden = false
+            streamModeButton.setTitle(currentStream == "m3u8" ? "Video: HLS" : "Video: TS", for: .normal)
             renewButton.isHidden = false
+            mailTmAttributionButton.isHidden = true
             actionButton.isHidden = true
             retryButton.isHidden = true
-            statusLabel.text = "WARP is on · \(channels.count) live channels · Login expires \(Self.expiryText(credentials.expiresAt))"
+            statusLabel.text = "\(warpReady ? "WARP is on" : "WARP is off") · \(channels.count) live channels · Login expires \(Self.expiryText(credentials.expiresAt))"
             progressView.setProgress(1, animated: true)
             progressView.isHidden = true
         } catch {
@@ -590,8 +733,15 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         applyFilters()
     }
 
+    @objc private func toggleStreamMode() {
+        currentStream = currentStream == "m3u8" ? "ts" : "m3u8"
+        streamModeButton.setTitle(currentStream == "m3u8" ? "Video: HLS" : "Video: TS", for: .normal)
+        statusLabel.text = currentStream == "m3u8"
+            ? "Standard mode selected. HLS is tried first; alternate formats retry automatically."
+            : "Compatibility mode selected. TS is tried first; alternate formats retry automatically."
+    }
+
     @objc private func refreshCatalog() {
-        guard warpReady else { warpStartFailed("WARP must be connected before refreshing Live TV."); return }
         Task { await loadCatalog() }
     }
 
@@ -637,30 +787,28 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard warpReady, let credentials else { warpStartFailed("WARP disconnected. Playback was blocked."); return }
+        guard let credentials else { statusLabel.text = "Load or request a TV login before playing channels."; return }
         let channel = visibleChannels[indexPath.row]
-        guard let streamURL = XtreamClient(portal: credentials.portal, username: credentials.username, password: credentials.password).streamURL(for: channel, extension: currentStream) else {
+        let urls = XtreamClient(portal: credentials.portal, username: credentials.username, password: credentials.password).streamURLs(for: channel, preferredExtension: currentStream)
+        guard !urls.isEmpty else {
             statusLabel.text = "Channel has no playable stream URL."; return
         }
         fetchEpg(for: channel)
-        let player = AVPlayer(url: streamURL)
-        let controller = AVPlayerViewController()
-        controller.player = player
-        controller.title = channel.name
-        controller.entersFullScreenWhenPlaybackBegins = true
-        controller.exitsFullScreenWhenPlaybackEnds = true
-        present(controller, animated: true) { player.play() }
+        let controller = VLCPlayerViewController(channelTitle: channel.name, urls: urls, warpIsOn: warpReady) { [weak self] in
+            self?.toggleWARP()
+        }
+        playbackController = controller
+        present(controller, animated: true)
     }
 
     private func fetchEpg(for channel: JoyfulChannel) {
-        guard warpReady, let credentials else { return }
+        guard let credentials else { return }
         epgTask?.cancel()
-        if let cached = epgCache[channel.identity] { statusLabel.text = "WARP is on · Now: \(cached)"; return }
+        if let cached = epgCache[channel.identity] { statusLabel.text = "\(warpReady ? "WARP is on" : "WARP is off") · Now: \(cached)"; return }
         epgTask = Task {
             do {
                 let title = try await XtreamClient(portal: credentials.portal, username: credentials.username, password: credentials.password).nowNext(streamID: channel.streamID)
-                guard warpReady else { throw JoyfulError.warpLost }
-                if let title { epgCache[channel.identity] = title; statusLabel.text = "WARP is on · Now: \(title)"; tableView.reloadData() }
+                if let title { epgCache[channel.identity] = title; statusLabel.text = "\(warpReady ? "WARP is on" : "WARP is off") · Now: \(title)"; tableView.reloadData() }
             } catch { /* Guide metadata is optional; playback continues. */ }
         }
     }
@@ -669,13 +817,8 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        if view.bounds.width > view.bounds.height, view.bounds.width > 600 {
-            controls.axis = .vertical
-            controls.distribution = .fill
-        } else {
-            controls.axis = .horizontal
-            controls.distribution = .fillEqually
-        }
+        controls.axis = .horizontal
+        controls.distribution = .fillEqually
     }
 
     private static func expiryText(_ date: Date) -> String {
@@ -689,6 +832,276 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         guard let data = try? JSONSerialization.data(withJSONObject: [value], options: [.fragmentsAllowed]),
               let array = String(data: data, encoding: .utf8), array.count >= 2 else { return "\"\"" }
         return String(array.dropFirst().dropLast())
+    }
+}
+
+@MainActor
+private final class VLCPlayerViewController: UIViewController {
+    private let navy = UIColor(red: 15/255, green: 17/255, blue: 43/255, alpha: 1)
+    private let accent = UIColor(red: 38/255, green: 210/255, blue: 232/255, alpha: 1)
+    private let channelTitle: String
+    private let urls: [URL]
+    private let onWarpToggle: () -> Void
+    private let player = VLCMediaPlayer()
+    private let videoSurface = UIView()
+    private let titleLabel = UILabel()
+    private let statusLabel = UILabel()
+    private let activityIndicator = UIActivityIndicatorView(style: .large)
+    private let warpButton = UIButton(type: .system)
+    private let playPauseButton = UIButton(type: .system)
+    private let retryButton = UIButton(type: .system)
+    private var stateTimer: Timer?
+    private var attemptIndex = 0
+    private var retryCount = 0
+    private var attemptStartedAt = Date()
+    private var retryScheduled = false
+    private var isClosing = false
+
+    init(channelTitle: String, urls: [URL], warpIsOn: Bool, onWarpToggle: @escaping () -> Void) {
+        self.channelTitle = channelTitle
+        self.urls = urls
+        self.onWarpToggle = onWarpToggle
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .fullScreen
+        setWARPState(isOn: warpIsOn, isChanging: false)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override var prefersStatusBarHidden: Bool { true }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .allButUpsideDown }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        buildPlayerInterface()
+        player.drawable = videoSurface
+        attemptIndex = 0
+        startAttempt()
+        stateTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refreshPlaybackState()
+        }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if isBeingDismissed || isMovingFromParent {
+            stopPlayer()
+        }
+    }
+
+    func setWARPState(isOn: Bool, isChanging: Bool) {
+        warpButton.setTitle(isChanging ? "WARP …" : (isOn ? "WARP ON" : "WARP OFF"), for: .normal)
+        warpButton.backgroundColor = isOn ? accent : UIColor(white: 0.78, alpha: 1)
+        warpButton.isEnabled = !isChanging
+        warpButton.accessibilityLabel = isChanging ? "WARP changing state" : (isOn ? "WARP connected; tap to disconnect" : "WARP disconnected; tap to connect")
+    }
+
+    private func buildPlayerInterface() {
+        videoSurface.translatesAutoresizingMaskIntoConstraints = false
+        videoSurface.backgroundColor = .black
+        view.addSubview(videoSurface)
+
+        let topBar = UIStackView()
+        topBar.axis = .horizontal
+        topBar.alignment = .center
+        topBar.spacing = 8
+        topBar.isLayoutMarginsRelativeArrangement = true
+        topBar.layoutMargins = UIEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        topBar.backgroundColor = UIColor.black.withAlphaComponent(0.65)
+
+        let closeButton = makePlayerButton(title: "Close")
+        closeButton.accessibilityLabel = "Close player"
+        closeButton.widthAnchor.constraint(equalToConstant: 58).isActive = true
+        closeButton.addTarget(self, action: #selector(closePlayer), for: .touchUpInside)
+        titleLabel.text = channelTitle
+        titleLabel.textColor = .white
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.numberOfLines = 1
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        warpButton.setTitleColor(navy, for: .normal)
+        warpButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .heavy)
+        warpButton.layer.cornerRadius = 10
+        warpButton.contentEdgeInsets = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
+        warpButton.widthAnchor.constraint(equalToConstant: 92).isActive = true
+        warpButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        warpButton.addTarget(self, action: #selector(toggleWARP), for: .touchUpInside)
+        topBar.addArrangedSubview(closeButton)
+        topBar.addArrangedSubview(titleLabel)
+        topBar.addArrangedSubview(warpButton)
+        topBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(topBar)
+
+        statusLabel.text = "Connecting to channel…"
+        statusLabel.textColor = .white
+        statusLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        statusLabel.textAlignment = .center
+        statusLabel.numberOfLines = 2
+        activityIndicator.color = accent
+        activityIndicator.startAnimating()
+
+        let bottomBar = UIStackView()
+        bottomBar.axis = .vertical
+        bottomBar.alignment = .fill
+        bottomBar.spacing = 8
+        bottomBar.isLayoutMarginsRelativeArrangement = true
+        bottomBar.layoutMargins = UIEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        bottomBar.backgroundColor = UIColor.black.withAlphaComponent(0.65)
+        bottomBar.addArrangedSubview(statusLabel)
+
+        let controls = UIStackView()
+        controls.axis = .horizontal
+        controls.alignment = .center
+        controls.distribution = .fillEqually
+        controls.spacing = 10
+        playPauseButton.setTitle("Pause", for: .normal)
+        playPauseButton.addTarget(self, action: #selector(togglePlayback), for: .touchUpInside)
+        retryButton.setTitle("Retry channel", for: .normal)
+        retryButton.isHidden = true
+        retryButton.addTarget(self, action: #selector(retryChannel), for: .touchUpInside)
+        for button in [playPauseButton, retryButton] {
+            button.setTitleColor(navy, for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
+            button.backgroundColor = accent
+            button.layer.cornerRadius = 11
+            button.contentEdgeInsets = UIEdgeInsets(top: 12, left: 10, bottom: 12, right: 10)
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+        }
+        controls.addArrangedSubview(playPauseButton)
+        controls.addArrangedSubview(retryButton)
+        bottomBar.addArrangedSubview(controls)
+        bottomBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(bottomBar)
+
+        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(activityIndicator)
+        NSLayoutConstraint.activate([
+            videoSurface.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            videoSurface.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            videoSurface.topAnchor.constraint(equalTo: view.topAnchor),
+            videoSurface.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+            topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
+            bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bottomBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -4),
+            activityIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            activityIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
+    }
+
+    private func makePlayerButton(title: String) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setTitle(title, for: .normal)
+        button.setTitleColor(navy, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 14, weight: .bold)
+        button.backgroundColor = accent
+        button.layer.cornerRadius = 10
+        button.contentEdgeInsets = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        return button
+    }
+
+    private func startAttempt() {
+        guard urls.indices.contains(attemptIndex), !isClosing else { return }
+        retryScheduled = false
+        attemptStartedAt = Date()
+        statusLabel.isHidden = false
+        statusLabel.text = "Connecting to channel…"
+        activityIndicator.startAnimating()
+        retryButton.isHidden = true
+        playPauseButton.setTitle("Pause", for: .normal)
+        player.stop()
+        player.drawable = videoSurface
+        player.media = VLCMedia(url: urls[attemptIndex])
+        player.play()
+    }
+
+    private func refreshPlaybackState() {
+        guard !isClosing else { return }
+        switch player.state {
+        case .playing:
+            retryScheduled = false
+            retryCount = 0
+            statusLabel.isHidden = true
+            activityIndicator.stopAnimating()
+            playPauseButton.setTitle("Pause", for: .normal)
+        case .paused:
+            statusLabel.isHidden = false
+            statusLabel.text = "Playback paused"
+            activityIndicator.stopAnimating()
+            playPauseButton.setTitle("Resume", for: .normal)
+        case .error, .ended:
+            tryFallbackOrRetry()
+        case .opening, .buffering:
+            statusLabel.isHidden = false
+            statusLabel.text = "Loading \(channelTitle)…"
+            if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
+        case .stopped:
+            if Date().timeIntervalSince(attemptStartedAt) > 20 { tryFallbackOrRetry() }
+        default:
+            break
+        }
+    }
+
+    private func tryFallbackOrRetry() {
+        guard !retryScheduled else { return }
+        retryScheduled = true
+        activityIndicator.stopAnimating()
+        if attemptIndex + 1 < urls.count {
+            attemptIndex += 1
+            statusLabel.isHidden = false
+            statusLabel.text = "Trying an alternate stream format…"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.startAttempt() }
+            return
+        }
+        if retryCount < 3 {
+            let delay = min(pow(2.0, Double(retryCount)), 8.0)
+            retryCount += 1
+            attemptIndex = 0
+            statusLabel.isHidden = false
+            statusLabel.text = "Stream interrupted. Retrying in \(Int(delay)) seconds…"
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.startAttempt() }
+            return
+        }
+        statusLabel.isHidden = false
+        statusLabel.text = "This channel could not start. Try another channel or check the provider stream."
+        retryButton.isHidden = false
+    }
+
+    private func stopPlayer() {
+        guard !isClosing else { return }
+        isClosing = true
+        stateTimer?.invalidate()
+        stateTimer = nil
+        player.stop()
+        player.drawable = nil
+    }
+
+    @objc private func closePlayer() {
+        stopPlayer()
+        dismiss(animated: true)
+    }
+
+    @objc private func toggleWARP() { onWarpToggle() }
+
+    @objc private func togglePlayback() {
+        if player.state == .playing || player.state == .buffering {
+            player.pause()
+        } else {
+            player.play()
+        }
+        refreshPlaybackState()
+    }
+
+    @objc private func retryChannel() {
+        retryCount = 0
+        attemptIndex = 0
+        startAttempt()
     }
 }
 
@@ -744,6 +1157,8 @@ private struct JoyfulChannel {
     let number: String
     let streamIcon: String
     let xmltvID: String
+    let containerExtension: String
+    let directSource: String
 }
 
 private struct TrialMailbox: Sendable {
@@ -969,15 +1384,39 @@ private struct XtreamClient {
             guard !id.isEmpty else { return nil }
             let name = row["name"] as? String ?? "Channel \(id)"
             let category = row["category_id"].map(String.init(describing:)) ?? ""
-            return JoyfulChannel(streamID: id, identity: id, name: name, categoryID: category, number: row["num"].map(String.init(describing:)) ?? "", streamIcon: row["stream_icon"] as? String ?? "", xmltvID: row["epg_channel_id"] as? String ?? row["xmltv_id"] as? String ?? "")
+            return JoyfulChannel(streamID: id, identity: id, name: name, categoryID: category, number: row["num"].map(String.init(describing:)) ?? "", streamIcon: row["stream_icon"] as? String ?? "", xmltvID: row["epg_channel_id"] as? String ?? row["xmltv_id"] as? String ?? "", containerExtension: row["container_extension"] as? String ?? "", directSource: row["direct_source"] as? String ?? "")
         }
         return XtreamCatalog(categories: cats, channels: items)
     }
-    func streamURL(for channel: JoyfulChannel, extension ext: String) -> URL? {
+    func streamURLs(for channel: JoyfulChannel, preferredExtension: String) -> [URL] {
         let pathCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
         guard let encodedUser = username.addingPercentEncoding(withAllowedCharacters: pathCharacters),
-              let encodedPass = password.addingPercentEncoding(withAllowedCharacters: pathCharacters) else { return nil }
-        return URL(string: "\(base)/live/\(encodedUser)/\(encodedPass)/\(channel.streamID).\(ext)")
+              let encodedPass = password.addingPercentEncoding(withAllowedCharacters: pathCharacters) else { return [] }
+        var urls: [URL] = []
+        if let direct = normalizedDirectSource(channel.directSource) { urls.append(direct) }
+        let alternate = preferredExtension.lowercased() == "ts" ? "m3u8" : "ts"
+        let candidates = [preferredExtension, channel.containerExtension, alternate, "m3u8", "ts"]
+        var seenExtensions = Set<String>()
+        for candidate in candidates {
+            let ext = candidate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard ext.range(of: #"^[a-z0-9]{2,8}$"#, options: .regularExpression) != nil,
+                  seenExtensions.insert(ext).inserted,
+                  let url = URL(string: "\(base)/live/\(encodedUser)/\(encodedPass)/\(channel.streamID).\(ext)"),
+                  !urls.contains(where: { $0.absoluteString == url.absoluteString }) else { continue }
+            urls.append(url)
+        }
+        return urls
+    }
+
+    private func normalizedDirectSource(_ raw: String) -> URL? {
+        guard var components = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let host = components.host?.lowercased(),
+              ["http", "https"].contains(components.scheme?.lowercased() ?? "") else { return nil }
+        if components.scheme?.lowercased() == "http" && host != "kytv.xyz" {
+            components.scheme = "https"
+            if components.port == 80 { components.port = nil }
+        }
+        return components.url
     }
     func nowNext(streamID: String) async throws -> String? {
         let response = try await getJSON(endpoint(action: "get_short_epg", streamID: streamID))

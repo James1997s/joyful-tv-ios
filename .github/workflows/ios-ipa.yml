@@ -20,6 +20,7 @@ jobs:
         run: |
           brew list go >/dev/null 2>&1 || brew install go
           brew list swiftlint >/dev/null 2>&1 || brew install swiftlint
+          brew list cocoapods >/dev/null 2>&1 || brew install cocoapods
 
       - name: Validate public WARP profile
         run: |
@@ -34,11 +35,14 @@ jobs:
           APP_ID_MACOS = com.joyful.watch.iptv.mac
           EOF
 
+      - name: Install VLC media framework
+        run: pod install --repo-update
+
       - name: Build iOS app for device
         run: |
-          set -o pipefail
+          set -euo pipefail
           xcodebuild \
-            -project WireGuard.xcodeproj \
+            -workspace WireGuard.xcworkspace \
             -scheme WireGuardiOS \
             -destination 'generic/platform=iOS' \
             -configuration Release \
@@ -51,10 +55,20 @@ jobs:
 
       - name: Ad-hoc sign app and packet tunnel entitlements
         run: |
+          set -euo pipefail
           APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/WireGuard.app"
           EXT="$APP/PlugIns/WireGuardNetworkExtension.appex"
           test -x "$APP/WireGuard"
           test -x "$EXT/WireGuardNetworkExtension"
+          test -s "$APP/MobileVLCKit-LICENSE.txt"
+          if [ -d "$APP/Frameworks" ]; then
+            find "$APP/Frameworks" -depth -type d -name '*.framework' -print0 | while IFS= read -r -d '' FRAMEWORK; do
+              EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$FRAMEWORK/Info.plist" 2>/dev/null || true)
+              if [ -n "$EXECUTABLE" ] && /usr/bin/otool -hv "$FRAMEWORK/$EXECUTABLE" 2>/dev/null | grep -q 'DYLIB'; then
+                codesign --force --sign - --timestamp=none "$FRAMEWORK"
+              fi
+            done
+          fi
           python3 - "$RUNNER_TEMP/app-entitlements.plist" "$RUNNER_TEMP/extension-entitlements.plist" <<'PY'
           import plistlib, sys
           app = {

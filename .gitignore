@@ -35,6 +35,10 @@ xcuserdata
 .swiftpm
 .build/
 
+# CocoaPods
+Pods/
+WireGuard.xcworkspace/
+
 # Fastlane
 *.app.dSYM.zip
 *.mobileprovision

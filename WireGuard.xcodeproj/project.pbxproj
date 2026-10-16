@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		58233BCF2591F842002060A8 /* NotificationToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58233BCE2591F842002060A8 /* NotificationToken.swift */; };
 		58233BD02591F842002060A8 /* NotificationToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58233BCE2591F842002060A8 /* NotificationToken.swift */; };
+		A20000000000000000000001 /* MobileVLCKit-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* MobileVLCKit-LICENSE.txt */; };
 		585B105A2577E293004F691E /* InterfaceConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 585B10462577E293004F691E /* InterfaceConfiguration.swift */; };
 		585B105B2577E293004F691E /* InterfaceConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 585B10462577E293004F691E /* InterfaceConfiguration.swift */; };
 		585B105C2577E293004F691E /* InterfaceConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 585B10462577E293004F691E /* InterfaceConfiguration.swift */; };
@@ -284,6 +285,7 @@
 
 /* Begin PBXFileReference section */
 		58233BCE2591F842002060A8 /* NotificationToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationToken.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* MobileVLCKit-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "MobileVLCKit-LICENSE.txt"; sourceTree = "<group>"; };
 		585B10462577E293004F691E /* InterfaceConfiguration.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = InterfaceConfiguration.swift; sourceTree = "<group>"; };
 		585B10472577E293004F691E /* PeerConfiguration.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PeerConfiguration.swift; sourceTree = "<group>"; };
 		585B10482577E293004F691E /* DNSServer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DNSServer.swift; sourceTree = "<group>"; };
@@ -622,6 +624,7 @@
 			isa = PBXGroup;
 			children = (
 				6FF4AC1E211EC472002C96EB /* Assets.xcassets */,
+				A20000000000000000000002 /* MobileVLCKit-LICENSE.txt */,
 				6FF4AC20211EC472002C96EB /* LaunchScreen.storyboard */,
 				5F4541A721C44F5B00994C13 /* View */,
 				5F4541AC21C4720B00994C13 /* ViewController */,
@@ -1095,6 +1098,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000001 /* MobileVLCKit-LICENSE.txt in Resources */,
 				6F919ED9218C65C50023B400 /* wireguard_doc_logo_22x29.png in Resources */,
 				6F70E20E221058E1008BDFB4 /* InfoPlist.strings in Resources */,
 				6FE1765621C90BBE002690EA /* Localizable.strings in Resources */,
