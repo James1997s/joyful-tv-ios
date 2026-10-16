@@ -15,7 +15,7 @@ The WARP profile is intentionally committed in this public repository at the own
 - Trial enrollment using the existing `https://joyful.watch/trial/` form and the [Mail.tm API](https://docs.mail.tm/) (public-domain discovery, temporary account/token creation, and authenticated message polling). Mail.tm’s bearer token stays in memory; the temporary mailbox is deleted after credentials are received. The app includes a visible Mail.tm attribution link as required by its terms.
 - Verification-link and account-credential extraction from Mail.tm’s plain-text and HTML-array message formats, including compact single-line messages and the `user` label supported by the original Android app.
 - 24-hour credential retention in iOS Keychain.
-- Xtream-compatible account validation and Live TV categories/channels. HTTP portal URLs are upgraded to HTTPS; App Transport Security remains enabled, and an HTTP-only provider requires a narrowly scoped host exception.
+- Xtream-compatible account validation and Live TV categories/channels. App Transport Security permits cleartext HTTP only for the exact host `kytv.xyz` (not its subdomains); other HTTP portal URLs are upgraded to HTTPS. The IPTV username/password are not protected by TLS on the HTTP leg to `kytv.xyz` (WARP encrypts the device-to-WARP leg only).
 - Search, favorites, refresh, HLS stream URL construction, AVPlayer playback, and short EPG preview when the provider supports it.
 - Large touch targets, scrollable live-channel list, and portrait/landscape support.
 

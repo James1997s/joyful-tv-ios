@@ -542,14 +542,13 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         } catch {
             progressView.isHidden = true
             let networkError = error as NSError
-            if networkError.domain == NSURLErrorDomain && [-1022, -1200, -1201, -1202].contains(networkError.code) {
+            if networkError.domain == NSURLErrorDomain && networkError.code == -1022 {
                 let portalURL = URLComponents(string: credentials.portal)
                 let portalHost = portalURL?.host ?? "the IPTV portal"
-                if portalURL?.scheme?.lowercased() == "http" {
-                    statusLabel.text = "Could not connect to \(portalHost) over HTTPS. The account email supplied an HTTP portal; iOS blocks HTTP login connections. The app tried HTTPS. If this host is HTTP-only, send its hostname for a one-host exception."
-                } else {
-                    statusLabel.text = "Could not establish a secure connection to \(portalHost). Ask the provider for a working HTTPS portal."
-                }
+                statusLabel.text = "iOS blocked an HTTP redirect from \(portalHost). Cleartext HTTP is allowed only for kytv.xyz; the portal may have redirected to another host."
+            } else if networkError.domain == NSURLErrorDomain && [-1200, -1201, -1202].contains(networkError.code) {
+                let portalHost = URLComponents(string: credentials.portal)?.host ?? "the IPTV portal"
+                statusLabel.text = "Could not establish a secure connection to \(portalHost). Check that the portal server is available."
             } else {
                 statusLabel.text = "Could not load Live TV: \(error.localizedDescription)"
             }
@@ -942,6 +941,7 @@ private struct XtreamClient {
         value = value.replacingOccurrences(of: #"(?i)/player_api\.php/?$"#, with: "", options: .regularExpression)
         while value.hasSuffix("/") { value.removeLast() }
         guard var components = URLComponents(string: value), components.scheme?.lowercased() == "http" else { return value }
+        if components.host?.lowercased() == "kytv.xyz" { return value }
         components.scheme = "https"
         if components.port == 80 { components.port = nil }
         return components.string ?? value
