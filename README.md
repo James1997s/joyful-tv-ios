@@ -22,9 +22,9 @@ The first port focuses on the Android app’s Live-TV-only path. Its Android-onl
 
 ## GitHub Actions build
 
-The repository workflow `.github/workflows/ios-ipa.yml` builds an **unsigned IPA** using GitHub’s macOS runner. This is suited to a jailbroken device with an installer that accepts unsigned/ad-hoc packages. It is not an App Store or TestFlight artifact and cannot be installed on a stock iPhone without a valid signing identity/provisioning profile.
+The repository workflow `.github/workflows/ios-ipa.yml` builds an **ad-hoc-signed IPA** using GitHub’s macOS runner and embeds the packet-tunnel and app-group entitlements required by WireGuard. It is intended for a jailbroken device/installer that accepts ad-hoc signatures and preserves those entitlements. No Apple-issued provisioning profile is included; this is not an App Store or TestFlight artifact and is not a stock-iPhone install package.
 
-Manual equivalent on macOS:
+The workflow is the canonical device build because the manual Xcode command below only compiles the app; it does not perform the post-build entitlement signing or IPA packaging:
 
 ```bash
 cp Sources/WireGuardApp/Config/Developer.xcconfig.template Sources/WireGuardApp/Config/Developer.xcconfig

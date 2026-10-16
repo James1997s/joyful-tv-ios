@@ -174,7 +174,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.warpStartFailed("Could not load the iOS VPN configuration: \(error.localizedDescription)")
+                self.warpStartFailed("Could not load the iOS VPN configuration: \(Self.tunnelErrorDetails(error))")
             case .success(let manager):
                 self.tunnelsManager = manager
                 manager.activationDelegate = self
@@ -206,7 +206,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
                 guard let self else { return }
                 switch result {
                 case .failure(let error):
-                    self.warpStartFailed("Could not install the WARP tunnel: \(error.localizedDescription)")
+                    self.warpStartFailed("Could not install the WARP tunnel: \(Self.tunnelErrorDetails(error))")
                 case .success(let tunnel):
                     self.statusLabel.text = "Connecting WARP. Confirm the iOS VPN request…"
                     manager.startActivation(of: tunnel)
@@ -302,6 +302,23 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             if attempt < 3 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
         }
         return false
+    }
+
+    private static func tunnelErrorDetails(_ error: TunnelsManagerError) -> String {
+        let underlying: Error
+        switch error {
+        case .systemErrorOnListingTunnels(let value),
+             .systemErrorOnAddTunnel(let value),
+             .systemErrorOnModifyTunnel(let value),
+             .systemErrorOnRemoveTunnel(let value):
+            underlying = value
+        case .tunnelNameEmpty:
+            return "Tunnel name is empty."
+        case .tunnelAlreadyExistsWithThatName:
+            return "A tunnel with this name already exists."
+        }
+        let system = underlying as NSError
+        return "\(system.domain) (code \(system.code)): \(system.localizedDescription)"
     }
 
     func tunnelActivationAttemptFailed(tunnel: TunnelContainer, error: TunnelsManagerActivationAttemptError) {
