@@ -21,6 +21,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private let favoritesButton = UIButton(type: .system)
     private let refreshButton = UIButton(type: .system)
     private let renewButton = UIButton(type: .system)
+    private let mailTmAttributionButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let hiddenWebView = WKWebView(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
     private let header = UIStackView()
@@ -41,7 +42,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private var warpStartInProgress = false
     private var warpReady = false
     private var trialStage: TrialStage = .idle
-    private var mailboxID = ""
+    private var temporaryMailbox: TrialMailbox?
     private var mailboxAddress = ""
     private var firstMessageID = ""
     private var signupStartedAt = Date()
@@ -91,6 +92,11 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         configureButton(favoritesButton, title: "My Channels", action: #selector(toggleFavorites))
         configureButton(refreshButton, title: "Refresh", action: #selector(refreshCatalog))
         configureButton(renewButton, title: "Renew login", action: #selector(renewLogin))
+        mailTmAttributionButton.setTitle("Temporary email by Mail.tm", for: .normal)
+        mailTmAttributionButton.setTitleColor(UIColor.white.withAlphaComponent(0.72), for: .normal)
+        mailTmAttributionButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .medium)
+        mailTmAttributionButton.contentHorizontalAlignment = .leading
+        mailTmAttributionButton.addTarget(self, action: #selector(openMailTmWebsite), for: .touchUpInside)
         retryButton.isHidden = true
         actionButton.isHidden = true
         searchBar.delegate = self
@@ -120,6 +126,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         header.addArrangedSubview(actionButton)
         header.addArrangedSubview(retryButton)
         header.addArrangedSubview(renewButton)
+        header.addArrangedSubview(mailTmAttributionButton)
 
         controls.axis = .horizontal
         controls.spacing = 7
@@ -346,7 +353,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     }
     func importFromDisposableFile(url: URL) { }
 
-    // MARK: ThrowawayMail trial flow
+    // MARK: Mail.tm trial flow
 
     private func startTrial() {
         guard warpReady else {
@@ -354,6 +361,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
             return
         }
         trialTask?.cancel()
+        discardMailbox()
         trialStage = .idle
         progressView.isHidden = false
         progressView.setProgress(0.38, animated: true)
@@ -362,15 +370,27 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         statusLabel.text = "WARP is on. Creating your temporary mailbox…"
         trialTask = Task { [weak self] in
             guard let self else { return }
+            var createdMailbox: TrialMailbox?
             do {
-                let mailbox = try await ThrowawayMail.createMailbox()
+                let mailbox = try await MailTm.createMailbox()
+                createdMailbox = mailbox
+                self.temporaryMailbox = mailbox
+                try Task.checkCancellation()
                 guard self.warpReady else { throw JoyfulError.warpLost }
-                self.mailboxID = mailbox.id
                 self.mailboxAddress = mailbox.address
                 self.trialStage = .openingForm
                 self.statusLabel.text = "WARP is on. Opening the trial form for \(mailbox.address)…"
                 self.hiddenWebView.load(URLRequest(url: URL(string: "https://joyful.watch/trial/")!))
+            } catch is CancellationError {
+                if let createdMailbox {
+                    if self.temporaryMailbox?.id == createdMailbox.id { self.discardMailbox() }
+                    else { Task { await MailTm.deleteMailbox(createdMailbox) } }
+                }
             } catch {
+                if let createdMailbox {
+                    if self.temporaryMailbox?.id == createdMailbox.id { self.discardMailbox() }
+                    else { Task { await MailTm.deleteMailbox(createdMailbox) } }
+                }
                 self.showTrialFailure("Could not create the temporary inbox: \(error.localizedDescription)")
             }
         }
@@ -424,37 +444,54 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
     private func pollMailbox(excluding excludedID: String, label: String) {
         guard warpReady else { warpStartFailed("WARP disconnected. No credentials were fetched."); return }
         trialTask?.cancel()
+        guard let mailbox = temporaryMailbox else {
+            showTrialFailure("The temporary mailbox is no longer available. Please try again.")
+            return
+        }
         trialTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let message = try await ThrowawayMail.waitForMessage(mailboxID: self.mailboxID, excluding: excludedID, warpIsReady: { self.warpReady }, progress: { [weak self] text in
+                let message = try await MailTm.waitForMessage(mailbox: mailbox, excluding: excludedID, label: label, warpIsReady: { self.warpReady }, progress: { [weak self] text in
                     DispatchQueue.main.async { self?.statusLabel.text = text }
                 })
+                try Task.checkCancellation()
+                guard self.temporaryMailbox?.id == mailbox.id else { return }
                 guard self.warpReady else { throw JoyfulError.warpLost }
                 if self.trialStage == .waitingForVerification {
-                    guard let verifyURL = ThrowawayMail.verificationURL(from: message) else {
+                    guard let verifyURL = MailTm.verificationURL(from: message) else {
                         throw JoyfulError.message("Verification email did not contain a recognized confirmation link.")
                     }
-                    self.firstMessageID = message["message_id"] as? String ?? message["id"] as? String ?? ""
+                    self.firstMessageID = message["id"] as? String ?? message["message_id"] as? String ?? ""
                     self.trialStage = .confirming
                     self.statusLabel.text = "WARP is on. Confirming the email…"
                     self.hiddenWebView.load(URLRequest(url: verifyURL))
                 } else {
-                    let text = ThrowawayMail.messageText(message)
-                    let details = try ThrowawayMail.extractCredentials(text)
+                    let text = MailTm.messageText(message)
+                    let details = try MailTm.extractCredentials(text)
                     guard self.warpReady else { throw JoyfulError.warpLost }
                     let saved = JoyfulCredentials(portal: details.portal, username: details.username, password: details.password, expiresAt: self.signupStartedAt.addingTimeInterval(24 * 60 * 60))
                     try SecureCredentialVault.save(saved)
                     self.credentials = saved
+                    self.discardMailbox()
                     self.trialStage = .idle
                     self.statusLabel.text = "WARP is on. Account details saved securely for 24 hours."
                     self.progressView.setProgress(1, animated: true)
                     await self.loadCatalog()
                 }
+            } catch is CancellationError {
+                if self.temporaryMailbox?.id == mailbox.id { self.discardMailbox() }
             } catch {
-                self.showTrialFailure(error.localizedDescription)
+                if self.temporaryMailbox?.id == mailbox.id {
+                    self.showTrialFailure(error.localizedDescription)
+                }
             }
         }
+    }
+
+    private func discardMailbox() {
+        guard let mailbox = temporaryMailbox else { return }
+        temporaryMailbox = nil
+        Task { await MailTm.deleteMailbox(mailbox) }
     }
 
     private func showTrialFailure(_ message: String) {
@@ -471,6 +508,10 @@ final class MainViewController: UIViewController, WKNavigationDelegate, UITableV
         startTrial()
     }
     @objc private func renewLogin() { startTrial() }
+    @objc private func openMailTmWebsite() {
+        guard let url = URL(string: "https://mail.tm") else { return }
+        UIApplication.shared.open(url)
+    }
 
     // MARK: IPTV
 
@@ -695,7 +736,11 @@ private struct JoyfulChannel {
     let xmltvID: String
 }
 
-private struct TrialMailbox { let id: String; let address: String }
+private struct TrialMailbox: Sendable {
+    let id: String
+    let address: String
+    let token: String
+}
 
 private enum JoyfulError: LocalizedError {
     case warpLost
@@ -708,43 +753,70 @@ private enum JoyfulError: LocalizedError {
     }
 }
 
-private enum ThrowawayMail {
-    private static let root = URL(string: "https://throwawaymail.app")!
+private enum MailTm {
+    private static let root = URL(string: "https://api.mail.tm")!
+    private static let pathCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+
     static func createMailbox() async throws -> TrialMailbox {
-        let json = try await request(path: "/api/mailboxes", method: "POST")
-        guard let object = json as? [String: Any], let id = object["mailbox_id"] as? String, let address = object["address"] as? String else {
-            throw JoyfulError.message("ThrowawayMail returned incomplete mailbox data.")
+        let response = try await request(path: "/domains")
+        guard let rows = (response as? [String: Any])?["hydra:member"] as? [[String: Any]] else {
+            throw JoyfulError.message("Mail.tm returned an unexpected domain list.")
         }
-        return TrialMailbox(id: id, address: address)
+        let domains = rows.compactMap { row -> String? in
+            guard row["isActive"] as? Bool == true, row["isPrivate"] as? Bool != true else { return nil }
+            return row["domain"] as? String
+        }
+        guard let domain = domains.first else { throw JoyfulError.message("Mail.tm has no active public domains available right now.") }
+
+        let localPart = "joyful" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        let address = "\(localPart)@\(domain)"
+        let password = UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let body = ["address": address, "password": password]
+
+        let accountResponse = try await request(path: "/accounts", method: "POST", body: body)
+        guard let account = accountResponse as? [String: Any], let accountID = account["id"] as? String else {
+            throw JoyfulError.message("Mail.tm created an account but returned no account ID.")
+        }
+        let tokenResponse = try await request(path: "/token", method: "POST", body: body)
+        guard let token = (tokenResponse as? [String: Any])?["token"] as? String, !token.isEmpty else {
+            throw JoyfulError.message("Mail.tm did not return an access token.")
+        }
+        return TrialMailbox(id: accountID, address: address, token: token)
     }
-    static func waitForMessage(mailboxID: String, excluding: String, warpIsReady: () -> Bool, progress: @escaping (String) -> Void) async throws -> [String: Any] {
-        let end = Date().addingTimeInterval(300)
-        while Date() < end {
+
+    static func deleteMailbox(_ mailbox: TrialMailbox) async {
+        guard let id = mailbox.id.addingPercentEncoding(withAllowedCharacters: pathCharacters) else { return }
+        _ = try? await request(path: "/accounts/\(id)", method: "DELETE", token: mailbox.token, timeout: 8)
+    }
+
+    static func waitForMessage(mailbox: TrialMailbox, excluding: String, label: String, warpIsReady: () -> Bool, progress: @escaping (String) -> Void) async throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(300)
+        while Date() < deadline {
             try Task.checkCancellation()
             guard warpIsReady() else { throw JoyfulError.warpLost }
-            guard let escaped = mailboxID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { throw JoyfulError.message("Invalid mailbox identifier.") }
-            let response = try await request(path: "/api/mailboxes/\(escaped)/messages", method: "GET")
-            let items: [[String: Any]]
-            if let array = response as? [[String: Any]] { items = array }
-            else if let envelope = response as? [String: Any], let array = envelope["messages"] as? [[String: Any]] ?? envelope["data"] as? [[String: Any]] { items = array }
-            else { throw JoyfulError.message("ThrowawayMail returned an unexpected message list.") }
-            for summary in items {
-                guard warpIsReady() else { throw JoyfulError.warpLost }
-                let id = summary["message_id"] as? String ?? summary["id"] as? String ?? ""
-                guard !id.isEmpty, id != excluding else { continue }
-                let full = try await request(path: "/api/mailboxes/\(escaped)/messages/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)", method: "GET")
-                if var object = full as? [String: Any] {
-                    if object["message_id"] == nil && object["id"] == nil { object["message_id"] = id }
-                    return object
-                }
+            let response = try await request(path: "/messages", token: mailbox.token)
+            guard let rows = (response as? [String: Any])?["hydra:member"] as? [[String: Any]] else {
+                throw JoyfulError.message("Mail.tm returned an unexpected message list.")
             }
-            progress("WARP is on · Waiting for \(excluding.isEmpty ? "verification email" : "account details")…")
+            for summary in rows {
+                try Task.checkCancellation()
+                guard warpIsReady() else { throw JoyfulError.warpLost }
+                let id = summary["id"] as? String ?? ""
+                guard !id.isEmpty, id != excluding,
+                      let escaped = id.addingPercentEncoding(withAllowedCharacters: pathCharacters) else { continue }
+                let full = try await request(path: "/messages/\(escaped)", token: mailbox.token)
+                guard var object = full as? [String: Any] else { throw JoyfulError.message("Mail.tm returned an invalid email message.") }
+                if object["id"] == nil { object["id"] = id }
+                return object
+            }
+            progress("WARP is on · Waiting for \(label)…")
             try await Task.sleep(nanoseconds: 5_000_000_000)
         }
-        throw JoyfulError.message("No email arrived within five minutes.")
+        throw JoyfulError.message("No \(label) arrived within five minutes.")
     }
+
     static func verificationURL(from message: [String: Any]) -> URL? {
-        let html = message["html"] as? String ?? ""
+        let html = htmlBody(from: message)
         let text = message["text"] as? String ?? ""
         let pattern = #"https?://[^\s<>\"']+"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
@@ -758,14 +830,25 @@ private enum ThrowawayMail {
         }
         return nil
     }
+
     static func messageText(_ message: [String: Any]) -> String {
-        if let text = message["text"] as? String, !text.isEmpty { return text }
-        let html = message["html"] as? String ?? ""
-        return html.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression).replacingOccurrences(of: "&nbsp;", with: " ").replacingOccurrences(of: "&amp;", with: "&")
+        if let text = message["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
+        let html = htmlBody(from: message)
+        let withCellSeparators = html.replacingOccurrences(of: #"(?i)</td>\s*<td[^>]*>"#, with: "\t", options: .regularExpression)
+        let withLineBreaks = withCellSeparators.replacingOccurrences(of: #"(?i)<br\s*/?>|</(?:p|div|tr|li|h[1-6])>"#, with: "\n", options: .regularExpression)
+        let plain = withLineBreaks.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+        return plain.replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&#160;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
     }
+
     static func extractCredentials(_ text: String) throws -> (portal: String, username: String, password: String) {
         func value(_ labels: String) -> String? {
-            let pattern = "(?im)^\\s*(?:your\\s+)?(?:\\*\\*)?(?:" + labels + ")(?:\\*\\*)?\\s*(?::|=|\\bis\\b)\\s*([^\\r\\n]+)"
+            let pattern = "(?im)^\\s*(?:your\\s+)?(?:\\*\\*)?(?:" + labels + ")(?:\\*\\*)?\\s*(?::|=|\\bis\\b|\\t+)\\s*([^\\r\\n]+)"
             guard let regex = try? NSRegularExpression(pattern: pattern), let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)), let range = Range(match.range(at: 1), in: text) else { return nil }
             return String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "*`\"'")))
         }
@@ -775,17 +858,33 @@ private enum ThrowawayMail {
         guard let user, let password, let portal, let url = URL(string: portal), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw JoyfulError.message("The account email did not contain a complete portal, username, and password.") }
         return (portal, user, password)
     }
-    private static func request(path: String, method: String) async throws -> Any {
-        guard let url = URL(string: path, relativeTo: root)?.absoluteURL else { throw JoyfulError.message("Invalid ThrowawayMail endpoint.") }
+
+    private static func htmlBody(from message: [String: Any]) -> String {
+        if let html = message["html"] as? String { return html }
+        if let htmlParts = message["html"] as? [String] { return htmlParts.joined(separator: "\n") }
+        return ""
+    }
+
+    private static func request(path: String, method: String = "GET", token: String? = nil, body: [String: String]? = nil, timeout: TimeInterval = 25) async throws -> Any {
+        guard let url = URL(string: path, relativeTo: root)?.absoluteURL, url.host == root.host else { throw JoyfulError.message("Invalid Mail.tm endpoint.") }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 25
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("JoyfulTV-iOS/2.32", forHTTPHeaderField: "User-Agent")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw JoyfulError.message("ThrowawayMail returned a non-HTTP response.") }
-        guard (200..<300).contains(http.statusCode) else { throw JoyfulError.message("ThrowawayMail API returned HTTP \(http.statusCode).") }
-        guard data.count <= 10 * 1024 * 1024 else { throw JoyfulError.message("ThrowawayMail response was too large to process safely.") }
+        guard let http = response as? HTTPURLResponse else { throw JoyfulError.message("Mail.tm returned a non-HTTP response.") }
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 429 { throw JoyfulError.message("Mail.tm rate limit reached. Please wait briefly, then retry.") }
+            throw JoyfulError.message("Mail.tm API returned HTTP \(http.statusCode). Check network access and try again.")
+        }
+        guard data.count <= 10 * 1024 * 1024 else { throw JoyfulError.message("Mail.tm response was too large to process safely.") }
+        if data.isEmpty { return NSNull() }
         return try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
     }
 }
